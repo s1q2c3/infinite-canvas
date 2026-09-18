@@ -27,6 +27,17 @@ export function getElectronApi(): ElectronFileApi | null {
 }
 
 export const isElectronRuntime = () => getElectronApi() !== null;
+/** 导演台用的桌面能力：把分镜视频拼成成片（调随包分发的 ffmpeg）、在文件管理器里定位文件。 */
+export type ElectronStudioApi = {
+    concatVideos: (clips: { name: string; data: ArrayBuffer }[]) => Promise<{ ok: boolean; path?: string; error?: string }>;
+    openPath: (target: string) => Promise<boolean>;
+};
+
+declare global {
+    interface Window {
+        sqcStudio?: ElectronStudioApi;
+    }
+}
 
 /** 数据格式版本：上游改了本地存储结构时，在这里加迁移分支。 */
 export const SQC_SCHEMA_VERSION = 1;

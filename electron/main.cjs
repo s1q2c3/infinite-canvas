@@ -2,6 +2,8 @@ const { app, BrowserWindow, shell, ipcMain } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs/promises");
 const fsSync = require("node:fs");
+const { spawn } = require("node:child_process");
+
 
 // Chromium 计算字体/着色器缓存目录时会读 SystemDrive 环境变量；进程环境里没有这个变量时，
 // 它会退化成字面量 "%SystemDrive%"，再当成相对路径在当前工作目录下生成垃圾目录。
@@ -94,6 +96,64 @@ ipcMain.handle("sqc:stat", (_e, rel) =>
     }, null),
 );
 ipcMain.handle("sqc:getPaths", () => ({ dataDir, appDataDir, isDev }));
+
+// ── 导演台：把已生成的分镜视频拼成一条成片 ──
+// ffmpeg 随包分发：打包后放 exe 同级的 bin/ 下；开发时用 electron/bin/。
+const ffmpegBin = process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg";
+const ffmpegPath = isDev ? path.join(__dirname, "bin", ffmpegBin) : path.join(path.dirname(process.execPath), "bin", ffmpegBin);
+
+/** 跑一次 ffmpeg，收下 stderr 便于报错。 */
+function runFfmpeg(bin, args) {
+    return new Promise((resolve) => {
+        const child = spawn(bin, args, { windowsHide: true });
+        let stderr = "";
+        child.stderr.on("data", (chunk) => {
+            stderr += chunk.toString();
+        });
+        child.on("error", (error) => resolve({ code: -1, stderr: String(error) }));
+        child.on("close", (code) => resolve({ code, stderr }));
+    });
+}
+
+ipcMain.handle("sqc:concatVideos", (_e, payload) =>
+    safe(async () => {
+        const clips = Array.isArray(payload) ? payload : [];
+        if (!clips.length) return { ok: false, error: "没有可拼接的片段" };
+        if (!fsSync.existsSync(ffmpegPath)) return { ok: false, error: "没有找到 ffmpeg，请把 ffmpeg.exe 放到程序目录的 bin/ 下。" };
+
+        const tmpDir = path.join(runtimeDir, "concat", String(Date.now()));
+        await fs.mkdir(tmpDir, { recursive: true });
+        const files = [];
+        for (let index = 0; index < clips.length; index += 1) {
+            const file = path.join(tmpDir, `clip-${String(index).padStart(4, "0")}.mp4`);
+            await fs.writeFile(file, Buffer.from(clips[index].data));
+            files.push(file);
+        }
+        const listFile = path.join(tmpDir, "list.txt");
+        await fs.writeFile(listFile, files.map((file) => `file '${file.replace(/\\/g, "/")}'`).join("\n"), "utf8");
+
+        const outDir = path.join(dataDir, "成片");
+        await fs.mkdir(outDir, { recursive: true });
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+        const outFile = path.join(outDir, `成片-${stamp}.mp4`);
+
+        // 先试无损拼接（同源片段最快）；编码不一致时会失败，退回统一重编码
+        const first = await runFfmpeg(ffmpegPath, ["-y", "-f", "concat", "-safe", "0", "-i", listFile, "-c", "copy", outFile]);
+        if (first.code !== 0) {
+            const second = await runFfmpeg(ffmpegPath, ["-y", "-f", "concat", "-safe", "0", "-i", listFile, "-c:v", "libx264", "-c:a", "aac", "-pix_fmt", "yuv420p", outFile]);
+            if (second.code !== 0) return { ok: false, error: (second.stderr || first.stderr || "").slice(-500) || "拼接失败" };
+        }
+
+        await fs.rm(tmpDir, { recursive: true, force: true });
+        return { ok: true, path: outFile };
+    }, { ok: false, error: "拼接失败" }),
+);
+
+ipcMain.handle("sqc:openPath", (_e, target) => {
+    if (typeof target === "string" && target) shell.showItemInFolder(target);
+    return true;
+});
+
 
 let win = null;
 

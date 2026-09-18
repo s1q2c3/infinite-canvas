@@ -24,6 +24,12 @@
             "preload.cjs",
             "renderer/**/*"
         ],
+        "extraFiles": [
+            {
+                "from": "bin",
+                "to": "bin"
+            }
+        ],
         "win": {
             "target": [
                 "dir"

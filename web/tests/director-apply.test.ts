@@ -1,6 +1,6 @@
 /**
  * 集成测试：把导演台生成的指令交给画布真正的指令执行器（applyCanvasAgentOps），
- * 验证落地的节点 / 连线 / 分组 / 折叠标记都符合预期。
+ * 验证落地的节点 / 连线 / 分组都符合预期。
  *
  * 这层比"布局函数自己算得对"更有意义 —— 它保证生成的 op 真的能被画布吃下。
  *
@@ -19,6 +19,7 @@ const store = new Map<string, string>();
 
 const { applyCanvasAgentOps } = await import("../src/lib/canvas/canvas-agent-ops");
 const { buildAssetPlan, buildShotPlan, DIRECTOR_CHARACTER_TYPE, DIRECTOR_CHAPTER_TYPE, DIRECTOR_PROP_TYPE, DIRECTOR_SCENE_TYPE } = await import("../src/lib/director/layout");
+const { collectShotAssociation } = await import("../src/lib/director/associate");
 const { parseAssets, parseShotsByScene } = await import("../src/lib/director/parse");
 const { CanvasNodeType } = await import("../src/types/canvas");
 const { registerBuiltinNodes } = await import("../src/components/canvas/nodes/builtin-nodes");
@@ -75,7 +76,7 @@ function applyAssets() {
     const assets = parseAssets(assetOutput);
     const plan = buildAssetPlan({
         directorNodeId: "director-1",
-        bundle: { characters: assets.characters, props: assets.props, chapters: [{ title: "第一章 雨夜重逢", text: "外面在下雨。", scenes: assets.scenes }] },
+        bundle: { characters: assets.characters, props: assets.props, segments: [{ title: "第一章 雨夜重逢", text: "外面在下雨。", scenes: assets.scenes }] },
         origin: { x: 0, y: 1000 },
     });
     return { plan, result: applyCanvasAgentOps(emptySnapshot(), plan.ops) };
@@ -93,17 +94,18 @@ function applyShots(applied: ReturnType<typeof applyAssets>["result"]) {
     return applyCanvasAgentOps(applied, plan.ops);
 }
 
-test("第一步：人物 / 物品 / 章节 / 场景全部落到画布上，连线与归属标记正确", () => {
+test("第一步：角色 / 物品 / 场次全部落到画布上，连线与归属标记正确", () => {
     const { result } = applyAssets();
 
     const byType = (type: string) => result.nodes.filter((node) => node.type === type);
     expect(byType(DIRECTOR_CHARACTER_TYPE)).toHaveLength(2);
     expect(byType(DIRECTOR_PROP_TYPE)).toHaveLength(1);
-    expect(byType(DIRECTOR_CHAPTER_TYPE)).toHaveLength(1);
+    // 「章」已降级成场次上的属性，不再有章节节点
+    expect(byType(DIRECTOR_CHAPTER_TYPE)).toHaveLength(0);
     expect(byType(DIRECTOR_SCENE_TYPE)).toHaveLength(1);
-    expect(result.nodes).toHaveLength(5);
+    expect(result.nodes).toHaveLength(4);
 
-    // 人物主角在前、物品在下一区
+    // 角色主角在前、物品在下一区
     const characters = byType(DIRECTOR_CHARACTER_TYPE);
     expect(characters[0].title).toBe("林小满");
     expect(characters[0].metadata?.directorMeta).toMatchObject({ kind: "character", tier: "main", directorNodeId: "director-1" });
@@ -111,17 +113,21 @@ test("第一步：人物 / 物品 / 章节 / 场景全部落到画布上，连�
     expect(propNode.metadata?.directorMeta).toMatchObject({ kind: "prop" });
     expect(propNode.position.y).toBeGreaterThan(characters[0].position.y);
 
-    // 场景记住了出场人物与出现物品的节点 id
+    // 场次记住了段标题、段正文与出场人物 / 出现物品的节点 id
     const scene = byType(DIRECTOR_SCENE_TYPE)[0];
-    expect(scene.metadata?.directorMeta).toMatchObject({ kind: "scene", characterIds: characters.map((item) => item.id), propIds: [propNode.id] });
-    // 节点文字是可读的字段文本，用户能直接在画布上改
+    expect(scene.metadata?.directorMeta).toMatchObject({
+        kind: "scene",
+        chapterTitle: "第一章 雨夜重逢",
+        script: "外面在下雨。",
+        characterIds: characters.map((item) => item.id),
+        propIds: [propNode.id],
+    });
     expect(scene.metadata?.content).toContain("地点：城东便利店");
 
-    // 连线：两个人物 + 一个物品都指向场景
     expect(result.connections.filter((connection) => connection.toNodeId === scene.id)).toHaveLength(3);
 });
 
-test("第二步：分镜挂到场景右侧、归进组，标题带生成类型", () => {
+test("第二步：分镜挂到场次右侧、归进组，标题带生成类型", () => {
     const { result } = applyAssets();
     const afterShots = applyShots(result);
 
@@ -131,22 +137,20 @@ test("第二步：分镜挂到场景右侧、归进组，标题带生成类型",
 
     expect(shots).toHaveLength(2);
     expect(shots.map((shot) => shot.title)).toEqual(["镜 1-1 · 图", "镜 1-2 · 视频"]);
-    // 与场景同一行、排在场景右侧
+    // 与场次同一行、排在场景右侧
     expect(shots[0].position.y).toBe(scene.position.y);
     expect(shots[0].position.x).toBeGreaterThan(scene.position.x + scene.width);
     // 归进组：侧边栏才能按组展开成树
     shots.forEach((shot) => expect(shot.metadata?.groupId).toBe(group.id));
-    // 记住所属场景，点生图时才能自动接上场景与人物
     shots.forEach((shot) => expect(shot.metadata?.directorMeta).toMatchObject({ kind: "shot", sceneNodeId: scene.id }));
     expect(shots[0].metadata?.content).toContain("镜号：1-1");
     expect(shots[1].metadata?.content).toContain("生成类型：视频");
 });
 
-test("重跑第二步：只删分镜与组，资产节点（人物 / 物品 / 章节 / 场景）原样保留", () => {
+test("重跑第二步：只删分镜与组，资产节点（角色 / 物品 / 场次）原样保留", () => {
     const { result } = applyAssets();
     const afterShots = applyShots(result);
 
-    // 面板的清理逻辑：第二步重跑时删掉本导演台的分镜与组
     const stale = afterShots.nodes.filter((node) => {
         const meta = node.metadata?.directorMeta as { directorNodeId?: string; kind?: string } | undefined;
         return meta?.directorNodeId === "director-1" && (meta.kind === "shot" || meta.kind === "group");
@@ -157,11 +161,11 @@ test("重跑第二步：只删分镜与组，资产节点（人物 / 物品 / �
     expect(cleaned.nodes.some((node) => node.type === DIRECTOR_CHARACTER_TYPE)).toBe(true);
     expect(cleaned.nodes.some((node) => node.type === DIRECTOR_PROP_TYPE)).toBe(true);
     expect(cleaned.nodes.some((node) => node.type === DIRECTOR_SCENE_TYPE)).toBe(true);
-    // 人物 → 场景、物品 → 场景 的连线保留，场景 → 分镜 的连线随分镜删掉
+    // 角色 → 场次、物品 → 场次 的连线保留，场次 → 分镜 的连线随分镜删掉
     expect(cleaned.connections).toHaveLength(3);
 });
 
-test("重跑第一步：清掉全部产物（场景变了，分镜必须重建）", () => {
+test("重跑第一步：清掉全部产物（场次变了，分镜必须重建）", () => {
     const { result } = applyAssets();
     const afterShots = applyShots(result);
 
@@ -175,15 +179,34 @@ test("重跑第一步：清掉全部产物（场景变了，分镜必须重建�
     expect(cleaned.connections).toHaveLength(0);
 });
 
-test("折叠：把 hidden 打到场景与分镜上，节点与连线都还在（只是不渲染）", () => {
+test("关联素材：分镜默认继承所属场次的出场人物与出现物品（不依赖画布连线）", () => {
     const { result } = applyAssets();
     const afterShots = applyShots(result);
     const scene = afterShots.nodes.find((node) => node.type === DIRECTOR_SCENE_TYPE)!;
-    const shotIds = afterShots.nodes.filter((node) => node.type === CanvasNodeType.Text).map((node) => node.id);
+    const shot = afterShots.nodes.find((node) => node.type === CanvasNodeType.Text)!;
 
-    const collapsed = applyCanvasAgentOps(afterShots, [scene.id, ...shotIds].map((id) => ({ type: "update_node" as const, id, metadata: { hidden: true } })));
+    // 把场次 → 分镜的连线删掉，关联素材照样能取到 —— 这正是「替代连线」的意义
+    const withoutShotLinks = { ...afterShots, connections: afterShots.connections.filter((connection) => connection.toNodeId !== shot.id) };
+    const association = collectShotAssociation({ shotNodeId: shot.id, nodes: withoutShotLinks.nodes, connections: withoutShotLinks.connections });
 
-    expect(collapsed.nodes).toHaveLength(afterShots.nodes.length); // 没有删节点
-    expect(collapsed.nodes.filter((node) => node.metadata?.hidden)).toHaveLength(3);
-    expect(collapsed.connections).toHaveLength(afterShots.connections.length); // 连线也保留
+    expect(association.assets.map((asset) => asset.kind).sort()).toEqual(["character", "character", "prop", "scene"]);
+    expect(association.assets.find((asset) => asset.kind === "scene")?.nodeId).toBe(scene.id);
+    expect(association.context).toContain("地点：城东便利店");
+    // 还没有生成任何参考图，所以全部算「缺图」
+    expect(association.missingImages).toHaveLength(4);
+});
+
+test("关联素材：镜头自己配了 assetIds 时以它为准", () => {
+    const { result } = applyAssets();
+    const afterShots = applyShots(result);
+    const shot = afterShots.nodes.find((node) => node.type === CanvasNodeType.Text)!;
+    const character = afterShots.nodes.find((node) => node.type === DIRECTOR_CHARACTER_TYPE)!;
+
+    const patched = applyCanvasAgentOps(afterShots, [
+        { type: "update_node", id: shot.id, metadata: { directorMeta: { ...(shot.metadata?.directorMeta as object), assetIds: [character.id] } } },
+    ]);
+    const association = collectShotAssociation({ shotNodeId: shot.id, nodes: patched.nodes, connections: patched.connections });
+
+    expect(association.assets).toHaveLength(1);
+    expect(association.assets[0].nodeId).toBe(character.id);
 });

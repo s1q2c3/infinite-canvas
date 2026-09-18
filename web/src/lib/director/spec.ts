@@ -11,6 +11,12 @@ export type FieldSpec = {
     label: string;
     /** 必填字段缺失时，一致性自检会报出来。 */
     required?: boolean;
+    /**
+     * 字段出现的位置：
+     * card = 卡片正面；preset = 收进「镜头预设」；detail = 点开编辑弹窗才看到。
+     * 不填等于 detail。
+     */
+    group?: "card" | "preset" | "detail";
 };
 
 /** 人物节点：14 字段。 */
@@ -58,26 +64,43 @@ export const SCENE_FIELDS: FieldSpec[] = [
 /** 出场人物：单独渲染，不进文本。 */
 export const SCENE_CHARACTERS_LABEL = "出场人物";
 
-/** 分镜节点：16 字段。 */
+/**
+ * 分镜节点：17 字段，但按 group 分三层放。
+ *
+ * 卡面只留「画面 + 台词 + 时长 + 生成类型」；景别 / 机位 / 运镜 / 构图收进「镜头预设」；
+ * 其余点开编辑弹窗才看 —— 17 个字段全铺在卡片上会变成小作文，没法审阅。
+ */
 export const SHOT_FIELDS: FieldSpec[] = [
-    { key: "code", label: "镜号", required: true },
-    { key: "output", label: "生成类型", required: true },
-    { key: "duration", label: "时长" },
-    { key: "shotSize", label: "景别", required: true },
-    { key: "cameraHeight", label: "机位高度" },
-    { key: "cameraAngle", label: "机位角度" },
-    { key: "cameraMove", label: "运镜" },
-    { key: "composition", label: "构图" },
-    { key: "visual", label: "画面", required: true },
-    { key: "emotion", label: "情绪" },
-    { key: "dialogue", label: "台词" },
-    { key: "narration", label: "旁白" },
-    { key: "sfx", label: "音效" },
-    { key: "music", label: "配乐" },
-    { key: "pace", label: "节奏" },
-    { key: "transition", label: "转场" },
-    { key: "imagePrompt", label: "生图提示词", required: true },
+    { key: "code", label: "镜号", required: true, group: "detail" },
+    { key: "output", label: "生成类型", required: true, group: "card" },
+    { key: "duration", label: "时长", group: "card" },
+    { key: "shotSize", label: "景别", required: true, group: "preset" },
+    { key: "cameraHeight", label: "机位高度", group: "preset" },
+    { key: "cameraAngle", label: "机位角度", group: "preset" },
+    { key: "cameraMove", label: "运镜", group: "preset" },
+    { key: "composition", label: "构图", group: "preset" },
+    { key: "visual", label: "画面", required: true, group: "card" },
+    { key: "emotion", label: "情绪", group: "detail" },
+    { key: "dialogue", label: "台词", group: "card" },
+    { key: "narration", label: "旁白", group: "detail" },
+    { key: "sfx", label: "音效", group: "detail" },
+    { key: "music", label: "配乐", group: "detail" },
+    { key: "pace", label: "节奏", group: "detail" },
+    { key: "transition", label: "转场", group: "detail" },
+    { key: "imagePrompt", label: "生图提示词", required: true, group: "detail" },
 ];
+
+/** 按 group 取字段；不填 group 的当 detail。 */
+export function fieldsInGroup(fields: FieldSpec[], group: NonNullable<FieldSpec["group"]>) {
+    return fields.filter((field) => (field.group || "detail") === group);
+}
+
+/** 分镜卡片正面。 */
+export const SHOT_CARD_FIELDS = fieldsInGroup(SHOT_FIELDS, "card");
+/** 收进镜头预设的那几项。 */
+export const SHOT_PRESET_FIELDS = fieldsInGroup(SHOT_FIELDS, "preset");
+/** 编辑弹窗里的其余字段。 */
+export const SHOT_DETAIL_FIELDS = fieldsInGroup(SHOT_FIELDS, "detail");
 
 /** 重要物品 / 道具：9 字段。它和人物一样是跨场景的资产，所以也在第一步拆出来。 */
 export const PROP_FIELDS: FieldSpec[] = [

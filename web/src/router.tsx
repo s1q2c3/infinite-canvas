@@ -10,6 +10,7 @@ import HomePage from "@/pages/home";
 import ImagePage from "@/pages/image";
 import NotFound from "@/pages/not-found";
 import PromptsPage from "@/pages/prompts";
+import StudioPage from "@/pages/studio";
 import VideoPage from "@/pages/video";
 
 import { isElectronRuntime } from "@/lib/sqc-fs";
@@ -34,6 +35,8 @@ export const router = createRouter([
             { path: "/prompts", element: <PromptsPage /> },
             { path: "/canvas", element: <CanvasPage /> },
             { path: "/canvas/:id", element: <CanvasProjectPage /> },
+            // 导演台工作台：和画布共享同一份节点数据
+            { path: "/canvas/:id/studio", element: <StudioPage /> },
             { path: "/config", element: <ConfigPage /> },
         ],
     },

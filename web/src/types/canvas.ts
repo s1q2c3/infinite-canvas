@@ -124,7 +124,25 @@ type DirectorOwned = {
 };
 
 /** 人物节点。 */
-export type DirectorCharacterMeta = DirectorOwned & { kind: "character"; characterId: string; tier: DirectorCharacterTier };
+/** 角色的一套服饰（变体）。主形象之外，同一角色在不同场次可能换装。 */
+export type DirectorCostume = {
+    id: string;
+    name: string;
+    /** 服饰描述：穿搭、颜色、材质等可见信息。 */
+    prompt: string;
+};
+
+/** 人物节点。 */
+export type DirectorCharacterMeta = DirectorOwned & {
+    kind: "character";
+    characterId: string;
+    tier: DirectorCharacterTier;
+    /**
+     * 服饰变体。第一套是主形象（id = "main"），其余按剧情需要添加。
+     * 每套服饰对应一张生成图（image 节点的 metadata.directorPhoto.look = 服饰名）。
+     */
+    costumes?: DirectorCostume[];
+};
 
 /** 场景节点。 */
 export type DirectorSceneMeta = DirectorOwned & {
@@ -132,7 +150,13 @@ export type DirectorSceneMeta = DirectorOwned & {
     sceneId: string;
     /** 场景序号，全篇从 1 开始。 */
     order: number;
-    /** 所属章节节点 id（章节折叠时用它找齐本章场景）。 */
+    /**
+     * 所属章节标题。工作台改成「场次」主轴后，「章」降级成场次上的分组属性，不再单独建章节节点。
+     */
+    chapterTitle?: string;
+    /** 该场正文（从剧本里切出来的这一场）。 */
+    script?: string;
+    /** @deprecated 旧数据的章节节点 id，仅用于兼容读取。 */
     chapterNodeId?: string;
     /** 出场人物节点 id 列表；显示时取当前名字，所以改人名会自动同步。 */
     characterIds: string[];
@@ -162,6 +186,13 @@ export type DirectorShotMeta = DirectorOwned & {
     sceneNodeId: string;
     /** 镜号，场景内从 1 开始。 */
     index: number;
+    /**
+     * 关联素材（角色 / 场景 / 道具节点 id）。这是「连线」的替代品：
+     * 生成时按这份列表去取设定文本与参考图，不再依赖画布拓扑。
+     */
+    assetIds?: string[];
+    /** 本镜选用的镜头预设 id；预设值已合进节点文字，这里只记来源。 */
+    presetId?: string;
 };
 
 export type DirectorNodeMeta = DirectorCharacterMeta | DirectorSceneMeta | DirectorChapterMeta | DirectorShotMeta | DirectorPropMeta | DirectorGroupMeta;
@@ -178,27 +209,50 @@ export type DirectorPhotoMeta = {
     look?: string;
 };
 
-/** 导演台两步流程的当前阶段。 */
+/** 工作台的四步。 */
+export type DirectorStage = "script" | "art" | "storyboard" | "film";
+
+/** 镜头预设的值：只覆盖「怎么拍」那几个字段。 */
+export type ShotPresetValues = Partial<Record<"shotSize" | "cameraHeight" | "cameraAngle" | "cameraMove" | "composition", string>>;
+
+/** 镜头预设：一组可复用的「怎么拍」组合，存在项目里。 */
+export type ShotPreset = {
+    id: string;
+    name: string;
+    values: ShotPresetValues;
+};
+
+/** 输入判定：粘贴进来的是小说还是剧本。 */
+export type DirectorScriptKind = "novel" | "script";
+
+/** 导演台流程的当前阶段。 */
 export type DirectorStep = "idle" | "extracting" | "extracted" | "decomposing" | "done" | "error";
 
 /**
  * 导演台节点的持久化状态。
- * 只存流程状态与模型选择；人物 / 场景 / 分镜的结构一律以画布节点为准，避免两份数据不同步。
+ * 只存流程状态、模型选择与项目级配置；人物 / 场景 / 分镜的结构一律以画布节点为准，避免两份数据不同步。
  */
 export type DirectorState = {
     /** 拆解模型，独立于全局默认模型。 */
     model: string;
     step: DirectorStep;
+    /** 工作台当前停在哪一步。 */
+    stage?: DirectorStage;
     /**
-     * 待拆解的小说原文 —— 「输入态」的临时存放，此时还没有章节节点可放。
-     * 第二步跑完后每章原文会写进对应章节节点，这里清空，
-     * 避免几十万字长期挂在单个节点上（拖动节点会反复序列化整个画布）。
+     * 剧本 / 小说原文。工作台是整页应用，不再把原文分散到章节节点上，所以这里长期保留 ——
+     * 「重新提取」时要能回到原文。
      */
     sourceText?: string;
-    /** 已切分的章节数。 */
-    chapterCount?: number;
-    /** 每章期望分镜数（0 = 交给模型判断）。 */
+    /** 输入判定结果，由模型给出。 */
+    scriptKind?: DirectorScriptKind;
+    /** 全局画风：一次设定，所有生图提示词都会带上。 */
+    style?: string;
+    /** 项目级镜头预设。 */
+    presets?: ShotPreset[];
+    /** 每场期望分镜数（0 = 交给模型判断）。 */
     shotsPerChapter?: number;
+    /** @deprecated 旧数据的章节数。 */
+    chapterCount?: number;
     progress?: { current: number; total: number; label: string };
     error?: string;
 };

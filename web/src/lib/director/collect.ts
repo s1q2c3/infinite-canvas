@@ -19,6 +19,10 @@ export type CollectedScene = {
     name: string;
     values: Record<string, string>;
     text: string;
+    /** 所属段（小说=章 / 剧本=场）的标题。工作台按它分组，不再有章节节点。 */
+    chapterTitle: string;
+    /** 该段正文。重新拆分镜时要回到它。 */
+    script: string;
     characterIds: string[];
     characterNames: string[];
     propIds: string[];
@@ -26,13 +30,11 @@ export type CollectedScene = {
     shots: CollectedShot[];
 };
 
+/** 按段聚合出来的分组 —— 纯虚拟结构，只为分组展示与导出，画布上没有对应节点。 */
 export type CollectedChapter = {
-    nodeId: string;
-    order: number;
     title: string;
+    order: number;
     chapterText: string;
-    /** 该章是否已折叠（面板里的箭头状态）。 */
-    collapsed: boolean;
     scenes: CollectedScene[];
 };
 
@@ -42,6 +44,8 @@ export type CollectedCharacter = {
     tier: DirectorCharacterTier;
     values: Record<string, string>;
     text: string;
+    /** 服饰变体（主形象 + 换装）。 */
+    costumes: { id: string; name: string; prompt: string }[];
 };
 
 export type CollectedProp = {
@@ -54,9 +58,8 @@ export type CollectedProp = {
 export type DirectorCollection = {
     characters: CollectedCharacter[];
     props: CollectedProp[];
+    /** 按段聚合的分组（展示用）。 */
     chapters: CollectedChapter[];
-    /** 未归属到任何章节的场景（异常情况，自检会报）。 */
-    orphanScenes: CollectedScene[];
     scenes: CollectedScene[];
     shots: CollectedShot[];
 };
@@ -69,14 +72,20 @@ export function collectDirectorData(nodes: CanvasNodeData[], directorNodeId: str
     const props: CollectedProp[] = [];
     const sceneNodes: CanvasNodeData[] = [];
     const shotNodes: CanvasNodeData[] = [];
-    const chapterNodes: CanvasNodeData[] = [];
 
     owned.forEach((node) => {
         const meta = readDirectorMeta(node);
         if (!meta) return;
         if (meta.kind === "character") {
             const values = parseFields(CHARACTER_FIELDS, node.metadata?.content || "");
-            characters.push({ nodeId: node.id, name: node.title || values.name || "", tier: meta.tier, values, text: node.metadata?.content || "" });
+            characters.push({
+                nodeId: node.id,
+                name: node.title || values.name || "",
+                tier: meta.tier,
+                values,
+                text: node.metadata?.content || "",
+                costumes: meta.costumes || [],
+            });
         } else if (meta.kind === "prop") {
             const values = parseFields(PROP_FIELDS, node.metadata?.content || "");
             props.push({ nodeId: node.id, name: node.title || values.name || "", values, text: node.metadata?.content || "" });
@@ -84,8 +93,6 @@ export function collectDirectorData(nodes: CanvasNodeData[], directorNodeId: str
             sceneNodes.push(node);
         } else if (meta.kind === "shot") {
             shotNodes.push(node);
-        } else if (meta.kind === "chapter") {
-            chapterNodes.push(node);
         }
     });
 
@@ -113,7 +120,6 @@ export function collectDirectorData(nodes: CanvasNodeData[], directorNodeId: str
         shotsByScene.set(meta.sceneNodeId, list);
     });
 
-    const sceneNodeById = new Map(sceneNodes.map((node) => [node.id, node] as const));
     const buildScene = (node: CanvasNodeData): CollectedScene | null => {
         const meta = readDirectorMeta(node);
         if (meta?.kind !== "scene") return null;
@@ -126,6 +132,8 @@ export function collectDirectorData(nodes: CanvasNodeData[], directorNodeId: str
             name: node.title || values.name || "",
             values,
             text: node.metadata?.content || "",
+            chapterTitle: meta.chapterTitle || "",
+            script: meta.script || "",
             characterIds: meta.characterIds,
             characterNames: resolve(meta.characterIds),
             propIds: meta.propIds || [],
@@ -134,32 +142,29 @@ export function collectDirectorData(nodes: CanvasNodeData[], directorNodeId: str
         };
     };
 
-    const allScenes = sceneNodes.map(buildScene).filter((scene): scene is CollectedScene => Boolean(scene));
-
-    const chapters: CollectedChapter[] = chapterNodes
-        .map((node) => {
-            const meta = readDirectorMeta(node);
-            if (meta?.kind !== "chapter") return null;
-            const chapterScenes = allScenes
-                .filter((scene) => {
-                    const sceneMeta = readDirectorMeta(sceneNodeById.get(scene.nodeId)!);
-                    return sceneMeta?.kind === "scene" && sceneMeta.chapterNodeId === node.id;
-                })
-                .sort((a, b) => a.order - b.order);
-            return { nodeId: node.id, order: meta.order, title: node.title, chapterText: meta.chapterText || "", collapsed: Boolean(meta.collapsed), scenes: chapterScenes };
-        })
-        .filter((chapter): chapter is CollectedChapter => Boolean(chapter))
+    const scenes = sceneNodes
+        .map(buildScene)
+        .filter((scene): scene is CollectedScene => Boolean(scene))
         .sort((a, b) => a.order - b.order);
 
-    const claimed = new Set(chapters.flatMap((chapter) => chapter.scenes.map((scene) => scene.nodeId)));
-    const orphanScenes = allScenes.filter((scene) => !claimed.has(scene.nodeId)).sort((a, b) => a.order - b.order);
+    // 按段聚合：同一段标题的场次归一组，顺序按第一场出现的位置
+    const groups = new Map<string, CollectedChapter>();
+    scenes.forEach((scene) => {
+        const title = scene.chapterTitle || "未分组";
+        let group = groups.get(title);
+        if (!group) {
+            group = { title, order: groups.size + 1, chapterText: scene.script, scenes: [] };
+            groups.set(title, group);
+        }
+        if (!group.chapterText && scene.script) group.chapterText = scene.script;
+        group.scenes.push(scene);
+    });
 
     return {
         characters: characters.sort((a, b) => (a.tier === b.tier ? 0 : a.tier === "main" ? -1 : 1)),
         props,
-        chapters,
-        orphanScenes,
-        scenes: allScenes.sort((a, b) => a.order - b.order),
-        shots: allScenes.flatMap((scene) => scene.shots),
+        chapters: [...groups.values()],
+        scenes,
+        shots: scenes.flatMap((scene) => scene.shots),
     };
 }

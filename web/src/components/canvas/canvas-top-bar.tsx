@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { BookOpen, Bot, Download, Home, Images, Menu, PanelLeftClose, PanelLeftOpen, Plus, Redo2, Trash2, Undo2, Upload } from "lucide-react";
+import { useNavigate, useParams } from "react-router-dom";
+import { BookOpen, Bot, Clapperboard, Download, Home, Images, Menu, PanelLeftClose, PanelLeftOpen, Plus, Redo2, Trash2, Undo2, Upload } from "lucide-react";
 import { Button, Dropdown, Modal, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 
@@ -57,6 +58,10 @@ export function CanvasTopBar({
     const colorTheme = useThemeStore((state) => state.theme);
     const { t } = useTranslation();
     const theme = canvasThemes[colorTheme];
+    // 「导演台」入口：切到工作台看同一份节点数据
+    const navigate = useNavigate();
+    const { id: projectId } = useParams<{ id: string }>();
+
     const titleRef = useRef<HTMLDivElement>(null);
     const [shortcutsOpen, setShortcutsOpen] = useState(false);
     const sidePanelOpen = useCanvasSidePanelStore((state) => state.panelOpen);
@@ -91,6 +96,7 @@ export function CanvasTopBar({
                         menu={{
                             items: [
                                 { key: "home", icon: <Home className="size-4" />, label: t("canvas.home"), onClick: onHome },
+                                { key: "studio", icon: <Clapperboard className="size-4" />, label: "导演台", onClick: () => navigate(`/canvas/${projectId}/studio`) },
                                 { key: "docs", icon: <BookOpen className="size-4" />, label: t("canvas.docs"), onClick: () => window.open(DOCS_URL, "_blank", "noopener,noreferrer") },
                                 { key: "projects", icon: <Images className="size-4" />, label: t("canvas.projects"), onClick: onProjects },
                                 { type: "divider" },

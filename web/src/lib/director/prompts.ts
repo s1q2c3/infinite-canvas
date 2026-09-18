@@ -7,6 +7,8 @@
  * 3. 第一步把「人物 / 场景 / 重要物品」三类跨场景资产一次拆完，第二步只拆分镜。
  */
 
+import type { DirectorScriptKind } from "@/types/canvas";
+
 /** 所有步骤共用的系统提示。 */
 export const DIRECTOR_SYSTEM_PROMPT = [
     "你是一位专业的影视剧本分析师与分镜师，擅长把小说转化成可以直接开拍的制作资料。",
@@ -93,10 +95,23 @@ const ASSET_FORMAT = [
     "（下一个物品，格式同上）",
 ].join("\n");
 
-/** 第一步：从一段（章或全书）文本里一次拆出人物 / 场景 / 重要物品。 */
-export function buildAssetExtractPrompt(sourceLabel: string, text: string) {
+/** 输入类型说明：剧本的场次是现成的，小说的场次要模型自己切。 */
+function sourceIntro(sourceLabel: string, kind: DirectorScriptKind) {
+    if (kind === "script") {
+        return [
+            `下面是一段剧本（${sourceLabel}）。请一次拆出三类制作资产：**人物**、**场景**、**重要物品**。`,
+            "",
+            "注意：这是剧本，场次已经由剧本本身切好了 —— 本段通常就是一场。",
+            "本段只有一场就只输出一个场景；确实包含多场才按剧本的场次切分。不要合并场次，也不要自行拆出新场次。",
+        ];
+    }
+    return [`请从下面这段小说文本（${sourceLabel}）里，一次拆出三类制作资产：**人物**、**场景**、**重要物品**。`];
+}
+
+/** 第一步：从一段文本里一次拆出人物 / 场景 / 重要物品。 */
+export function buildAssetExtractPrompt(sourceLabel: string, text: string, kind: DirectorScriptKind = "novel") {
     return [
-        `请从下面这段小说文本（${sourceLabel}）里，一次拆出三类制作资产：**人物**、**场景**、**重要物品**。`,
+        ...sourceIntro(sourceLabel, kind),
         "",
         "一、人物",
         "1. 只提取真正有戏份的人物。只露面一次、没有名字的功能性角色（如「店员」「路人甲」）不要单列。",
@@ -161,8 +176,8 @@ export function buildAssetMergePrompt(partials: string[]) {
 }
 
 /** 第二步：只为已经定下来的场景写分镜。 */
-export function buildShotPrompt(options: { chapterTitle: string; chapterText: string; sceneList: string; roster: string; shotsPerScene: number }) {
-    const { chapterTitle, chapterText, sceneList, roster, shotsPerScene } = options;
+export function buildShotPrompt(options: { sourceTitle: string; sourceText: string; sceneList: string; roster: string; shotsPerScene: number }) {
+    const { sourceTitle, sourceText, sceneList, roster, shotsPerScene } = options;
     const shotHint = shotsPerScene > 0 ? `每场约 ${shotsPerScene} 个分镜（可按剧情密度上下浮动）` : "每场一般 2~12 个分镜，由剧情密度决定";
 
     return [
@@ -224,7 +239,7 @@ export function buildShotPrompt(options: { chapterTitle: string; chapterText: st
         "",
         "没有内容的字段写「无」，不要留空。",
         "",
-        "本章的场景清单：",
+        "本段的场景清单：",
         "==========",
         sceneList,
         "==========",
@@ -234,10 +249,10 @@ export function buildShotPrompt(options: { chapterTitle: string; chapterText: st
         roster,
         "==========",
         "",
-        `章节标题：${chapterTitle}`,
-        "章节原文：",
+        `本段标题：${sourceTitle}`,
+        "本段原文：",
         '"""',
-        chapterText,
+        sourceText,
         '"""',
     ].join("\n");
 }

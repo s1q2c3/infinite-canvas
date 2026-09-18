@@ -4,5 +4,5 @@ renderer/
 dev-data/
 %SystemDrive%/
 NVIDIA Corporation/
-
-
+# ffmpeg 二进制（80MB，不进仓库）：见 README 的「拼成成片」一节
+bin/

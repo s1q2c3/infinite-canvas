@@ -129,11 +129,12 @@ const DEFINITIONS: CanvasNodeDefinition[] = [
         toolbar: makePhotoToolbar("prop"),
     },
     {
+        // 旧数据的章节节点：工作台改成场次主轴后不再新建，但保留定义以便画布编辑里能正常渲染与清理
         type: DIRECTOR_CHAPTER_TYPE,
         title: "章节",
         icon: <ListTree className={iconClass} />,
-        description: "章节分组标题，同时承载该章原文",
-        defaultSize: { width: DIRECTOR_LAYOUT.chapterWidth, height: DIRECTOR_LAYOUT.chapterHeight },
+        description: "旧版章节分组标题（不再新建）",
+        defaultSize: { width: 220, height: 160 },
         defaultMetadata: { content: "", status: "idle" },
         minimapColor: "#7fbf7f",
         showInCreateMenu: false,

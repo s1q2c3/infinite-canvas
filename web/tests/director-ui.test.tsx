@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import { MemoryRouter } from "react-router-dom";
 
 import { ChapterNodeContent, CharacterNodeContent, DirectorNodeContent, PropNodeContent, SceneNodeContent } from "../src/components/canvas/nodes/director-node";
 import { DirectorPanel } from "../src/components/canvas/nodes/director-panel";
@@ -197,38 +198,36 @@ test("章节节点：显示章号与场镜数，点击折叠本章场景与分�
     expect(ops[2]).toMatchObject({ id: "shot-node-1", metadata: { hidden: true } });
 });
 
-test("面板：渲染两步按钮、模型下拉、每场分镜档位", () => {
-    const html = renderToStaticMarkup(<DirectorPanel ctx={makeCtx(directorNode, graph).ctx} onClose={() => {}} />);
-    expect(html).toContain("① 拆人物 / 场景 / 物品");
-    expect(html).toContain("② 拆分镜");
-    expect(html).toContain("每场分镜");
-    expect(html).toContain("gpt-4o");
-    // 没拆出场景前第二步不可用
-    expect(html).toContain("disabled");
+test("面板：显示四步进度概览与「打开导演台工作台」入口", () => {
+    const html = renderToStaticMarkup(
+        <MemoryRouter initialEntries={["/canvas/p1"]}>
+            <DirectorPanel ctx={makeCtx(directorNode, graph).ctx} onClose={() => {}} />
+        </MemoryRouter>,
+    );
+    expect(html).toContain("导演台");
+    expect(html).toContain("① 剧本");
+    expect(html).toContain("② 设定");
+    expect(html).toContain("③ 分镜");
+    expect(html).toContain("④ 短片");
+    expect(html).toContain("打开导演台工作台");
+    // 还没拆过：剧本与设定两步都是未完成状态
+    expect(html).toContain("bg-stone-600");
 });
 
-
-test("面板：已拆出资产后显示资产标签、章节列表与五段进度看板", () => {
+test("面板：拆出资产后显示各步统计", () => {
     const node: CanvasNodeData = {
         ...directorNode,
-        metadata: { content: "", status: "idle", director: { model: "openai:gpt-4o", step: "done", sourceText: "第一章 雨夜重逢\n外面在下雨。" } },
+        metadata: { content: "", status: "idle", director: { model: "openai:gpt-4o", step: "done", scriptKind: "novel", sourceText: "第一章 雨夜重逢\n外面在下雨。" } },
     };
-    const html = renderToStaticMarkup(<DirectorPanel ctx={makeCtx(node, graph).ctx} onClose={() => {}} />);
+    const html = renderToStaticMarkup(
+        <MemoryRouter initialEntries={["/canvas/p1"]}>
+            <DirectorPanel ctx={makeCtx(node, graph).ctx} onClose={() => {}} />
+        </MemoryRouter>,
+    );
 
-    expect(html).toContain("1 人物 · 1 物品 · 1 场景");
-    expect(html).toContain("林小满 · 主角");
-    expect(html).toContain("泛黄的信封 · 物品");
-    expect(html).toContain("共 1 章 · 1 场 · 1 镜");
-    expect(html).toContain("人物照片");
-    expect(html).toContain("物品照片");
-    expect(html).toContain("场景照片");
-    expect(html).toContain("分镜图");
-    expect(html).toContain("分镜视频");
-    expect(html).toContain("导出分镜表");
-    expect(html).toContain("一致性自检");
-    expect(html).toContain("清理旧版拆解");
-    // 导演台独立模型要回填到下拉
-    expect(html).toContain('value="openai:gpt-4o" selected=""');
+    expect(html).toContain("1 角色 · 1 场次 · 1 道具");
+    expect(html).toContain("1 镜");
+    expect(html).toContain("在短片页拼接成片");
 });
 
 test("节点注册：五种类型都进注册表，只有导演台出现在创建菜单", async () => {

@@ -41,12 +41,8 @@ export function runSelfCheck(collection: DirectorCollection): SelfCheckIssue[] {
 
     collection.chapters.forEach((chapter) => {
         if (!chapter.scenes.length) {
-            issues.push({ level: "error", scope: `第${chapter.order}章 ${chapter.title}`, message: "这一章没有拆出任何场景", nodeId: chapter.nodeId });
+            issues.push({ level: "error", scope: `「${chapter.title}」`, message: "这一段没有拆出任何场次" });
         }
-    });
-
-    collection.orphanScenes.forEach((scene) => {
-        issues.push({ level: "warn", scope: `场景${scene.order} ${scene.name}`, message: "这个场景没有归属到任何章节", nodeId: scene.nodeId });
     });
 
     collection.scenes.forEach((scene) => {

@@ -14,3 +14,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
     stat: (relPath) => ipcRenderer.invoke("sqc:stat", relPath),
     getPaths: () => ipcRenderer.invoke("sqc:getPaths"),
 });
+
+// 导演台：把已生成的分镜视频拼成一条成片（调用随包分发的 ffmpeg），以及在文件管理器里定位成片。
+contextBridge.exposeInMainWorld("sqcStudio", {
+    concatVideos: (clips) => ipcRenderer.invoke("sqc:concatVideos", clips),
+    openPath: (target) => ipcRenderer.invoke("sqc:openPath", target),
+});

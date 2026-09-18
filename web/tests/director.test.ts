@@ -1,20 +1,10 @@
 import { expect, test } from "bun:test";
 
-import {
-    buildAssetPlan,
-    buildShotPlan,
-    characterRowHeight,
-    DIRECTOR_CHARACTER_TYPE,
-    DIRECTOR_CHAPTER_TYPE,
-    DIRECTOR_PROP_TYPE,
-    DIRECTOR_SCENE_TYPE,
-    GENERATED_STACK_HEIGHT,
-    propRowHeight,
-    sceneRowHeight,
-    type AssetBundle,
-} from "../src/lib/director/layout";
+import { buildAssetPlan, buildShotPlan, DIRECTOR_CHARACTER_TYPE, DIRECTOR_CHAPTER_TYPE, DIRECTOR_PROP_TYPE, DIRECTOR_SCENE_TYPE, type AssetBundle } from "../src/lib/director/layout";
 import { splitNovelChapters } from "../src/lib/director/novel-split";
 import { parseAssets, parseShotsByScene } from "../src/lib/director/parse";
+import { DEFAULT_SHOT_PRESETS, readPresets } from "../src/lib/director/presets";
+import { detectScriptKind, splitScriptSegments } from "../src/lib/director/script-parse";
 import { CHARACTER_FIELDS, formatFields, parseFields, PROP_FIELDS, readShotOutputKind, SCENE_FIELDS, SHOT_FIELDS } from "../src/lib/director/spec";
 import { CanvasNodeType } from "../src/types/canvas";
 
@@ -187,12 +177,12 @@ function buildBundle(): AssetBundle {
     return {
         characters: assets.characters,
         props: assets.props,
-        chapters: [{ title: "第一章 雨夜重逢", text: "外面在下雨。", scenes: assets.scenes }],
+        segments: [{ title: "第一章 雨夜重逢", text: "外面在下雨。", scenes: assets.scenes }],
     };
 }
 
-test("资产布局：人物区 / 物品区 / 章节块三段分开，且每段都预留了生成空间", () => {
-    const { ops, characterNodeIds, propNodeIds, chapterNodeIds, sceneNodeIds } = buildAssetPlan({
+test("资产布局：角色区 / 物品区 / 场次列三段分开，且不再建章节节点", () => {
+    const { ops, characterNodeIds, propNodeIds, sceneNodeIds } = buildAssetPlan({
         directorNodeId: "director-1",
         bundle: buildBundle(),
         origin: { x: 0, y: 0 },
@@ -207,52 +197,63 @@ test("资产布局：人物区 / 物品区 / 章节块三段分开，且每段�
 
     expect(chars).toHaveLength(2);
     expect(props).toHaveLength(1);
-    expect(chapters).toHaveLength(1);
+    // 「章」已经降级成场次上的分组属性，不再建章节节点
+    expect(chapters).toHaveLength(0);
     expect(scenes).toHaveLength(2);
     expect(characterNodeIds).toHaveLength(2);
     expect(propNodeIds).toHaveLength(1);
-    expect(chapterNodeIds).toHaveLength(1);
     expect(sceneNodeIds).toHaveLength(2);
 
     if (chars[0].type !== "add_node" || chars[1].type !== "add_node") throw new Error("类型不对");
     if (props[0].type !== "add_node") throw new Error("类型不对");
-    if (chapters[0].type !== "add_node") throw new Error("类型不对");
     if (scenes[0].type !== "add_node" || scenes[1].type !== "add_node") throw new Error("类型不对");
 
-    // 人物主角排前面，横向排开
+    // 角色主角排前面，横向排开
     expect(chars[0].title).toBe("林小满");
     expect(chars[1].x).toBeGreaterThan(chars[0].x);
     expect(chars[1].y).toBe(chars[0].y);
 
-    // 物品区在人物区下方，并且隔开了「人物行 + 生成空间」
-    expect(props[0].y).toBe(characterRowHeight() + 90);
+    // 物品区在角色区下方（角色高 170 + 行距 90）
+    expect(props[0].y).toBe(170 + 90);
 
-    // 章节块在物品区下方，同样隔开了「物品行 + 生成空间」
-    expect(chapters[0].y).toBe(characterRowHeight() + 90 + propRowHeight() + 90);
+    // 场次列在物品区下方，一场一行往下排（物品高 160 + 行距 90）
+    expect(scenes[0].y).toBe(170 + 90 + 160 + 90);
+    expect(scenes[1].y - scenes[0].y).toBe(190 + 90);
+    expect(scenes[0].x).toBe(scenes[1].x);
 
-    // 场景在章节节点右侧，两个场景行之间隔开了「场景行 + 生成空间」
-    expect(scenes[0].x).toBeGreaterThan(chapters[0].x);
-    expect(scenes[1].y - scenes[0].y).toBe(sceneRowHeight() + 90);
-
-    // 章节节点高度包住本章所有场景行
-    expect(chapters[0].height).toBe(2 * (sceneRowHeight() + 90) - 90);
-
-    // 连线：人物→场景 + 物品→场景
+    // 连线：人物→场次 + 物品→场次
     const connections = ops.filter((op) => op.type === "connect_nodes");
-    expect(connections).toHaveLength(4); // 场景1：两人 + 一物品；场景2：一人
+    expect(connections).toHaveLength(4); // 场次1：两人 + 一物品；场次2：一人
     const toScene2 = connections.filter((op) => op.type === "connect_nodes" && op.toNodeId === sceneNodeIds[1]);
     expect(toScene2).toHaveLength(1);
 
-    // 场景上的出场人物 / 出现物品存的是节点 id
-    expect(scenes[0].metadata?.directorMeta).toMatchObject({ kind: "scene", characterIds: [characterNodeIds[0], characterNodeIds[1]], propIds: [propNodeIds[0]] });
+    // 场次上带段标题与段正文，出场人物 / 出现物品存的是节点 id
+    expect(scenes[0].metadata?.directorMeta).toMatchObject({
+        kind: "scene",
+        chapterTitle: "第一章 雨夜重逢",
+        script: "外面在下雨。",
+        characterIds: [characterNodeIds[0], characterNodeIds[1]],
+        propIds: [propNodeIds[0]],
+    });
     expect(scenes[1].metadata?.directorMeta).toMatchObject({ kind: "scene", propIds: [] });
 });
 
-test("生成空间预留：每行高度 = 节点高 + 配置节点 + 图片/视频节点", () => {
-    expect(GENERATED_STACK_HEIGHT).toBe(96 + 240 + 96 + 240);
-    expect(characterRowHeight()).toBe(170 + GENERATED_STACK_HEIGHT);
-    expect(propRowHeight()).toBe(160 + GENERATED_STACK_HEIGHT);
-    expect(sceneRowHeight()).toBe(190 + GENERATED_STACK_HEIGHT);
+test("输入甄别：剧本按场次标记切段，小说按章切段", () => {
+    const script = ["1．内景 咖啡馆 日", "小满坐在窗边。", "", "小满：你来晚了。", "", "2．外景 街道 夜", "雨还在下。"].join("\n");
+    expect(detectScriptKind(script)).toBe("script");
+    expect(splitScriptSegments(script, "script").length).toBeGreaterThanOrEqual(2);
+
+    expect(detectScriptKind(novel)).toBe("novel");
+    expect(splitScriptSegments(novel, "novel").map((item) => item.title)).toContain("第一章 雨夜重逢");
+});
+
+test("镜头预设：没配过时回落到默认那套，配过就用项目里的", () => {
+    expect(readPresets(undefined)).toBe(DEFAULT_SHOT_PRESETS);
+    expect(readPresets([])).toBe(DEFAULT_SHOT_PRESETS);
+    const custom = [{ id: "p1", name: "自定义", values: { shotSize: "中景" } }];
+    expect(readPresets(custom)).toEqual(custom);
+    // 结构不完整的数据会被过滤掉，避免界面拿到半截对象
+    expect(readPresets([{ id: "bad" }])).toBe(DEFAULT_SHOT_PRESETS);
 });
 
 test("分镜布局：挂到已有场景右侧，标题带上生成类型", () => {
