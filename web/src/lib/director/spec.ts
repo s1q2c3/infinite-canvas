@@ -61,6 +61,7 @@ export const SCENE_CHARACTERS_LABEL = "出场人物";
 /** 分镜节点：16 字段。 */
 export const SHOT_FIELDS: FieldSpec[] = [
     { key: "code", label: "镜号", required: true },
+    { key: "output", label: "生成类型", required: true },
     { key: "duration", label: "时长" },
     { key: "shotSize", label: "景别", required: true },
     { key: "cameraHeight", label: "机位高度" },
@@ -78,11 +79,43 @@ export const SHOT_FIELDS: FieldSpec[] = [
     { key: "imagePrompt", label: "生图提示词", required: true },
 ];
 
+/** 重要物品 / 道具：9 字段。它和人物一样是跨场景的资产，所以也在第一步拆出来。 */
+export const PROP_FIELDS: FieldSpec[] = [
+    { key: "name", label: "名称", required: true },
+    { key: "category", label: "类别" },
+    { key: "appearance", label: "外观", required: true },
+    { key: "material", label: "材质" },
+    { key: "owner", label: "关联人物" },
+    { key: "scenes", label: "出现场景" },
+    { key: "role", label: "剧情作用" },
+    { key: "firstSeen", label: "首次出现" },
+    { key: "imagePrompt", label: "生图提示词", required: true },
+];
+
+/** 场景里出现的物品，和「出场人物」一样单独渲染、不进正文。 */
+export const SCENE_PROPS_LABEL = "出现物品";
+
 export const FIELD_SETS = {
     character: CHARACTER_FIELDS,
     scene: SCENE_FIELDS,
     shot: SHOT_FIELDS,
+    prop: PROP_FIELDS,
 } as const;
+
+/** 分镜的生成类型：这一镜该生图还是生视频。 */
+export type ShotOutputKind = "image" | "video";
+
+/** 从分镜文字里读出生成类型；识别不到按生图处理。 */
+export function readShotOutputKind(text: string): ShotOutputKind {
+    const value = parseFields(SHOT_FIELDS, text).output || "";
+    return /视频|video/i.test(value) ? "video" : "image";
+}
+
+/** 生成类型的中文短标签，用来标在节点标题上。 */
+export function shotOutputLabel(kind: ShotOutputKind) {
+    return kind === "video" ? "视频" : "图";
+}
+
 
 /** 把字段值渲染成节点文字：每行「标签：值」，空值跳过。 */
 export function formatFields(fields: FieldSpec[], values: Record<string, string | undefined>): string {

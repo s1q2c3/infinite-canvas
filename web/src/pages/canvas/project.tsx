@@ -94,9 +94,10 @@ import {
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 
+import { GENERATED_STACK_GAP } from "@/lib/director/layout";
 import { isDirectorShot } from "@/lib/director/meta";
 import { registerDirectorNodes } from "@/lib/director/register";
-import { collectShotReferenceNodeIds, DIRECTOR_SHOT_PROMPT } from "@/lib/director/wiring";
+import { collectShotReferenceNodeIds, DIRECTOR_SHOT_PROMPT, DIRECTOR_SHOT_VIDEO_PROMPT } from "@/lib/director/wiring";
 
 // Register built-in nodes in the shared registry once when the module loads.
 registerBuiltinNodes();
@@ -2392,6 +2393,8 @@ function InfiniteCanvasPage() {
                     const parentConfig = NODE_DEFAULT_SIZE[isConfigNode ? CanvasNodeType.Config : isImageNode ? CanvasNodeType.Image : CanvasNodeType.Text];
                     const imageConfig = NODE_DEFAULT_SIZE[CanvasNodeType.Image];
                     const parentPosition = sourceNode?.position || { x: 0, y: 0 };
+                    // 导演台建的配置节点：结果落在它正下方（布局已给每个框预留了下方空间）
+                    const directorStack = Boolean(sourceNode?.metadata?.directorStack);
                     const rootId = isEmptyImageNode ? nodeId : nanoid();
                     const imageIds = Array.from({ length: count }, () => nanoid());
                     pendingChildIds = [rootId];
@@ -2399,10 +2402,12 @@ function InfiniteCanvasPage() {
                         id: rootId,
                         type: CanvasNodeType.Image,
                         title: effectivePrompt.slice(0, 32) || "Generated Image",
-                        position: {
-                            x: isEmptyImageNode ? parentPosition.x : parentPosition.x + parentConfig.width + 96,
-                            y: parentPosition.y + parentConfig.height / 2 - imageConfig.height / 2,
-                        },
+                        position: directorStack
+                            ? { x: parentPosition.x, y: parentPosition.y + parentConfig.height + GENERATED_STACK_GAP }
+                            : {
+                                  x: isEmptyImageNode ? parentPosition.x : parentPosition.x + parentConfig.width + 96,
+                                  y: parentPosition.y + parentConfig.height / 2 - imageConfig.height / 2,
+                              },
                         width: isEmptyImageNode ? sourceNode?.width || imageConfig.width : imageConfig.width,
                         height: isEmptyImageNode ? sourceNode?.height || imageConfig.height : imageConfig.height,
                         metadata: {
@@ -2527,11 +2532,17 @@ function InfiniteCanvasPage() {
                     const isEmptyVideoNode = sourceNode?.type === CanvasNodeType.Video && !sourceNode.metadata?.content;
                     const videoId = isEmptyVideoNode ? nodeId : nanoid();
                     const parent = sourceNode?.position || { x: 0, y: 0 };
+                    // 导演台建的配置节点：结果落在它正下方
+                    const videoDirectorStack = Boolean(sourceNode?.metadata?.directorStack);
                     const videoNode: CanvasNodeData = {
                         id: videoId,
                         type: CanvasNodeType.Video,
                         title: effectivePrompt.slice(0, 32) || "Generated Video",
-                        position: isEmptyVideoNode ? sourceNode.position : { x: parent.x + (sourceNode?.width || spec.width) + 96, y: parent.y },
+                        position: isEmptyVideoNode
+                            ? sourceNode.position
+                            : videoDirectorStack
+                              ? { x: parent.x, y: parent.y + (sourceNode?.height || NODE_DEFAULT_SIZE[CanvasNodeType.Config].height) + GENERATED_STACK_GAP }
+                              : { x: parent.x + (sourceNode?.width || spec.width) + 96, y: parent.y },
                         width: isEmptyVideoNode ? sourceNode.width : spec.width,
                         height: isEmptyVideoNode ? sourceNode.height : spec.height,
                         metadata: {
@@ -2917,7 +2928,7 @@ function InfiniteCanvasPage() {
     const retryBatchImage = useCallback((node: CanvasNodeData, imageId: string) => void handleRetryNode(node, imageId), [handleRetryNode]);
 
     const generateImageFromTextNode = useCallback(
-        (node: CanvasNodeData) => {
+        (node: CanvasNodeData, mode: "image" | "video" = "image") => {
             const prompt = (node.metadata?.content || node.metadata?.prompt || "").trim();
             if (!prompt) {
                 message.warning(t("canvas.projectPage.emptyTextImage"));
@@ -2925,26 +2936,28 @@ function InfiniteCanvasPage() {
             }
             const sourceNode = nodesRef.current.find((item) => item.id === node.id);
             if (!sourceNode) return;
-            // 导演台拆出来的分镜：生成配置节点预先写好提示词，并把所属场景、出场人物、参考图一并接上。
-            // 画布的生成输入只读直接上游一层，不在这里补齐的话，分镜生图拿不到场景和人物信息。
+            // 导演台拆出来的分镜：生成配置节点预先写好提示词，并把所属场景、出场人物、物品、参考图一并接上。
+            // 画布的生成输入只读直接上游一层，不在这里补齐的话，分镜生成拿不到场景和人物信息。
             const directorShot = isDirectorShot(sourceNode);
             const nodeSize = getNodeSpec(CanvasNodeType.Config);
             const configNode = createCanvasNode(
                 CanvasNodeType.Config,
+                // 导演台的框：生成结果落到正下方（布局给每个框都预留了下方空间，竖着排一行才不会被撑成上万像素宽）
+                directorShot
+                    ? { x: sourceNode.position.x + nodeSize.width / 2, y: sourceNode.position.y + sourceNode.height + GENERATED_STACK_GAP + nodeSize.height / 2 }
+                    : { x: sourceNode.position.x + sourceNode.width + 96 + nodeSize.width / 2, y: sourceNode.position.y + sourceNode.height / 2 },
                 {
-                    x: sourceNode.position.x + sourceNode.width + 96 + nodeSize.width / 2,
-                    y: sourceNode.position.y + sourceNode.height / 2,
-                },
-                {
-                    prompt: directorShot ? DIRECTOR_SHOT_PROMPT : "",
-                    model: effectiveConfig.imageModel || effectiveConfig.model,
+                    prompt: directorShot ? (mode === "video" ? DIRECTOR_SHOT_VIDEO_PROMPT : DIRECTOR_SHOT_PROMPT) : "",
+                    generationMode: directorShot && mode === "video" ? "video" : "image",
+                    model: directorShot && mode === "video" ? effectiveConfig.videoModel || effectiveConfig.model : effectiveConfig.imageModel || effectiveConfig.model,
                     size: effectiveConfig.size,
                     count: directorShot ? 1 : getGenerationCount(effectiveConfig.canvasImageCount || effectiveConfig.count),
+                    ...(directorShot ? { directorStack: true, directorShotConfig: sourceNode.id } : {}),
                 },
             );
             const connection = { id: nanoid(), fromNodeId: sourceNode.id, toNodeId: configNode.id };
             const extraConnections = directorShot
-                ? collectShotReferenceNodeIds(sourceNode.id, nodesRef.current, connectionsRef.current)
+                ? collectShotReferenceNodeIds(sourceNode.id, nodesRef.current, connectionsRef.current, { forVideo: mode === "video" })
                       .filter((fromNodeId) => fromNodeId !== sourceNode.id && !connectionsRef.current.some((item) => item.fromNodeId === fromNodeId && item.toNodeId === configNode.id))
                       .map((fromNodeId) => ({ id: nanoid(), fromNodeId, toNodeId: configNode.id }))
                 : [];
@@ -2958,7 +2971,7 @@ function InfiniteCanvasPage() {
             setSelectedConnectionId(null);
             setDialogNodeId(configNode.id);
         },
-        [effectiveConfig.canvasImageCount, effectiveConfig.count, effectiveConfig.imageModel, effectiveConfig.model, effectiveConfig.size, message, t],
+        [effectiveConfig.canvasImageCount, effectiveConfig.count, effectiveConfig.imageModel, effectiveConfig.model, effectiveConfig.size, effectiveConfig.videoModel, message, t],
     );
 
     const insertAssistantImage = useCallback(

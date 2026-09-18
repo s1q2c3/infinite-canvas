@@ -15,17 +15,19 @@ export function toDirectorJson(collection: DirectorCollection) {
     return JSON.stringify(
         {
             app: "sqc-infinite-canvas-director",
-            version: 1,
+            version: 2,
             exportedAt: new Date().toISOString(),
             characters: collection.characters.map((character) => ({ name: character.name, tier: character.tier, ...character.values })),
+            props: collection.props.map((prop) => ({ name: prop.name, ...prop.values })),
             chapters: collection.chapters.map((chapter) => ({
                 order: chapter.order,
                 title: chapter.title,
                 scenes: chapter.scenes.map((scene) => ({
                     order: scene.order,
                     characters: scene.characterNames,
+                    props: scene.propNames,
                     ...scene.values,
-                    shots: scene.shots.map((shot) => ({ index: shot.index, ...shot.values })),
+                    shots: scene.shots.map((shot) => ({ index: shot.index, output: shot.output === "video" ? "视频" : "图", ...shot.values })),
                 })),
             })),
         },
@@ -36,7 +38,7 @@ export function toDirectorJson(collection: DirectorCollection) {
 
 /** 分镜表 CSV：一行一镜，可以直接用表格软件打开。 */
 export function toShotCsv(collection: DirectorCollection) {
-    const header = ["章节", "场景", "镜号", "时长", "景别", "机位高度", "机位角度", "运镜", "构图", "画面", "情绪", "台词", "旁白", "音效", "配乐", "节奏", "转场", "出场人物", "生图提示词"];
+    const header = ["章节", "场景", "镜号", "生成类型", "时长", "景别", "机位高度", "机位角度", "运镜", "构图", "画面", "情绪", "台词", "旁白", "音效", "配乐", "节奏", "转场", "出场人物", "出现物品", "生图提示词"];
     const rows: string[] = [header.map(csvCell).join(",")];
 
     collection.chapters.forEach((chapter) => {
@@ -48,6 +50,7 @@ export function toShotCsv(collection: DirectorCollection) {
                         `第${chapter.order}章 ${chapter.title}`,
                         scene.name,
                         shot.code,
+                        shot.output === "video" ? "视频" : "图",
                         v.duration || "",
                         v.shotSize || "",
                         v.cameraHeight || "",
@@ -63,6 +66,7 @@ export function toShotCsv(collection: DirectorCollection) {
                         v.pace || "",
                         v.transition || "",
                         scene.characterNames.join("、"),
+                        scene.propNames.join("、"),
                         v.imagePrompt || "",
                     ]
                         .map(csvCell)
@@ -88,6 +92,15 @@ export function toScript(collection: DirectorCollection) {
         });
     }
 
+    if (collection.props.length) {
+        lines.push("重要物品", "=".repeat(40));
+        collection.props.forEach((prop) => {
+            lines.push(`【${prop.name}】`);
+            lines.push(prop.text.trim());
+            lines.push("");
+        });
+    }
+
     collection.chapters.forEach((chapter) => {
         lines.push(`第${chapter.order}章  ${chapter.title}`, "=".repeat(40), "");
         chapter.scenes.forEach((scene) => {
@@ -97,13 +110,15 @@ export function toScript(collection: DirectorCollection) {
             lines.push(`氛围：${v.mood || "—"}　光线：${v.lighting || "—"}　色调：${v.palette || "—"}`);
             if (v.props) lines.push(`关键道具：${v.props}`);
             lines.push(`出场人物：${scene.characterNames.length ? scene.characterNames.join("、") : "—"}`);
+            if (scene.propNames.length) lines.push(`出现物品：${scene.propNames.join("、")}`);
             if (v.goal) lines.push(`场景目标：${v.goal}`);
             if (v.conflict) lines.push(`冲突：${v.conflict}`);
             lines.push("");
 
             scene.shots.forEach((shot) => {
                 const s = shot.values;
-                lines.push(`  ${shot.code}　${s.shotSize || ""}　${s.duration || ""}　${[s.cameraHeight, s.cameraAngle, s.cameraMove].filter(Boolean).join(" · ")}`);
+                const output = shot.output === "video" ? "【视频】" : "【图】";
+                lines.push(`  ${shot.code} ${output}　${s.shotSize || ""}　${s.duration || ""}　${[s.cameraHeight, s.cameraAngle, s.cameraMove].filter(Boolean).join(" · ")}`);
                 lines.push(`        画面：${s.visual || "—"}`);
                 if (s.dialogue && s.dialogue !== "无") lines.push(`        台词：${s.dialogue}`);
                 if (s.narration && s.narration !== "无") lines.push(`        旁白：${s.narration}`);

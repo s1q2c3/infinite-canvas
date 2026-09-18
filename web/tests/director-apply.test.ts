@@ -18,8 +18,8 @@ const store = new Map<string, string>();
 };
 
 const { applyCanvasAgentOps } = await import("../src/lib/canvas/canvas-agent-ops");
-const { buildCharacterPlan, buildSceneShotPlan, DIRECTOR_CHAPTER_TYPE, DIRECTOR_SCENE_TYPE } = await import("../src/lib/director/layout");
-const { parseCharacters, parseScenesAndShots } = await import("../src/lib/director/parse");
+const { buildAssetPlan, buildShotPlan, DIRECTOR_CHARACTER_TYPE, DIRECTOR_CHAPTER_TYPE, DIRECTOR_PROP_TYPE, DIRECTOR_SCENE_TYPE } = await import("../src/lib/director/layout");
+const { parseAssets, parseShotsByScene } = await import("../src/lib/director/parse");
 const { CanvasNodeType } = await import("../src/types/canvas");
 const { registerBuiltinNodes } = await import("../src/components/canvas/nodes/builtin-nodes");
 const { registerDirectorNodes } = await import("../src/lib/director/register");
@@ -31,106 +31,159 @@ registerDirectorNodes();
 
 const emptySnapshot = () => ({ projectId: "p1", title: "画布", nodes: [], connections: [], selectedNodeIds: [], viewport: { x: 0, y: 0, k: 1 } });
 
-const characterOutput = ["姓名：林小满", "分级：主角", "身份：便利店店员", "外貌：齐肩黑发", "生图提示词：22岁东亚女性", "---", "姓名：陈默", "分级：主角", "身份：建筑师", "外貌：清瘦高个", "生图提示词：25岁东亚男性"].join("\n");
-
-const sceneOutput = [
-    "=== 场景",
+const assetOutput = [
+    "### 人物",
+    "姓名：林小满",
+    "分级：主角",
+    "身份：便利店店员",
+    "外貌：齐肩黑发",
+    "生图提示词：22岁东亚女性",
+    "---",
+    "姓名：苏晴",
+    "分级：配角",
+    "身份：同事",
+    "外貌：短发圆眼镜",
+    "生图提示词：24岁东亚女性",
+    "### 场景",
     "场景名：便利店门口",
     "地点：城东便利店",
-    "出场人物：林小满、陈默",
+    "出场人物：林小满、苏晴",
+    "出现物品：泛黄的信封",
     "生图提示词：雨夜便利店门口",
+    "### 物品",
+    "名称：泛黄的信封",
+    "外观：米黄色牛皮纸，边角磨毛",
+    "生图提示词：米黄色旧信封特写",
+].join("\n");
+
+const shotOutput = [
+    "=== 便利店门口",
     "--- 分镜",
+    "生成类型：图",
     "景别：全景",
     "画面：小满背对镜头锁门",
     "生图提示词：雨夜街道全景",
     "--- 分镜",
+    "生成类型：视频",
     "景别：中景",
     "画面：她回头",
     "生图提示词：中景，雨夜",
 ].join("\n");
 
-/** 建一套完整的两步产物。 */
-function buildBothSteps() {
-    const characters = parseCharacters(characterOutput);
-    const characterPlan = buildCharacterPlan({ directorNodeId: "director-1", characters, origin: { x: 0, y: 0 } });
-    const lookup = new Map(characterPlan.characterNodeIds.map((id, index) => [characters[index].name, id]));
-    const scenePlan = buildSceneShotPlan({
+/** 第一步：拆资产并落到画布。 */
+function applyAssets() {
+    const assets = parseAssets(assetOutput);
+    const plan = buildAssetPlan({
         directorNodeId: "director-1",
-        characterLookup: lookup,
+        bundle: { characters: assets.characters, props: assets.props, chapters: [{ title: "第一章 雨夜重逢", text: "外面在下雨。", scenes: assets.scenes }] },
         origin: { x: 0, y: 1000 },
-        chapters: [{ title: "第一章 雨夜重逢", text: "外面在下雨。", scenes: parseScenesAndShots(sceneOutput) }],
     });
-    return { characterPlan, scenePlan };
+    return { plan, result: applyCanvasAgentOps(emptySnapshot(), plan.ops) };
 }
 
-test("第一步：人物节点真的落到画布上，并带上导演台归属标记", () => {
-    const { characterPlan } = buildBothSteps();
-    const result = applyCanvasAgentOps(emptySnapshot(), characterPlan.ops);
+/** 第二步：把分镜挂到场景上。 */
+function applyShots(applied: ReturnType<typeof applyAssets>["result"]) {
+    const scene = applied.nodes.find((node) => node.type === DIRECTOR_SCENE_TYPE)!;
+    const groups = parseShotsByScene(shotOutput);
+    const plan = buildShotPlan({
+        directorNodeId: "director-1",
+        assignments: [{ sceneNodeId: scene.id, shots: groups[0].shots }],
+        geometry: new Map([[scene.id, { x: scene.position.x, y: scene.position.y, width: scene.width, order: 1 }]]),
+    });
+    return applyCanvasAgentOps(applied, plan.ops);
+}
 
-    expect(result.nodes).toHaveLength(2);
-    expect(result.nodes.map((node) => node.type)).toEqual(["sqc:character", "sqc:character"]);
-    expect(result.nodes[0].title).toBe("林小满");
-    expect(result.nodes[0].metadata?.directorMeta).toMatchObject({ kind: "character", directorNodeId: "director-1", tier: "main" });
-    // 节点文字是可读的字段文本，用户能直接在画布上改
-    expect(result.nodes[0].metadata?.content).toContain("外貌：齐肩黑发");
-});
-
-test("第二步：章节 / 场景 / 分镜 / 组全部落地，连线与分组正确", () => {
-    const { characterPlan, scenePlan } = buildBothSteps();
-    const afterCharacters = applyCanvasAgentOps(emptySnapshot(), characterPlan.ops);
-    const result = applyCanvasAgentOps(afterCharacters, scenePlan.ops);
+test("第一步：人物 / 物品 / 章节 / 场景全部落到画布上，连线与归属标记正确", () => {
+    const { result } = applyAssets();
 
     const byType = (type: string) => result.nodes.filter((node) => node.type === type);
+    expect(byType(DIRECTOR_CHARACTER_TYPE)).toHaveLength(2);
+    expect(byType(DIRECTOR_PROP_TYPE)).toHaveLength(1);
     expect(byType(DIRECTOR_CHAPTER_TYPE)).toHaveLength(1);
     expect(byType(DIRECTOR_SCENE_TYPE)).toHaveLength(1);
-    expect(byType(CanvasNodeType.Text)).toHaveLength(2);
-    expect(byType(CanvasNodeType.Group)).toHaveLength(1);
-    expect(result.nodes).toHaveLength(7); // 2 人物 + 1 章节 + 1 场景 + 2 分镜 + 1 组
+    expect(result.nodes).toHaveLength(5);
 
-    // 分镜被归进组：侧边栏才能按组展开成树
-    const shots = byType(CanvasNodeType.Text);
-    const group = byType(CanvasNodeType.Group)[0];
+    // 人物主角在前、物品在下一区
+    const characters = byType(DIRECTOR_CHARACTER_TYPE);
+    expect(characters[0].title).toBe("林小满");
+    expect(characters[0].metadata?.directorMeta).toMatchObject({ kind: "character", tier: "main", directorNodeId: "director-1" });
+    const propNode = byType(DIRECTOR_PROP_TYPE)[0];
+    expect(propNode.metadata?.directorMeta).toMatchObject({ kind: "prop" });
+    expect(propNode.position.y).toBeGreaterThan(characters[0].position.y);
+
+    // 场景记住了出场人物与出现物品的节点 id
+    const scene = byType(DIRECTOR_SCENE_TYPE)[0];
+    expect(scene.metadata?.directorMeta).toMatchObject({ kind: "scene", characterIds: characters.map((item) => item.id), propIds: [propNode.id] });
+    // 节点文字是可读的字段文本，用户能直接在画布上改
+    expect(scene.metadata?.content).toContain("地点：城东便利店");
+
+    // 连线：两个人物 + 一个物品都指向场景
+    expect(result.connections.filter((connection) => connection.toNodeId === scene.id)).toHaveLength(3);
+});
+
+test("第二步：分镜挂到场景右侧、归进组，标题带生成类型", () => {
+    const { result } = applyAssets();
+    const afterShots = applyShots(result);
+
+    const shots = afterShots.nodes.filter((node) => node.type === CanvasNodeType.Text);
+    const group = afterShots.nodes.find((node) => node.type === CanvasNodeType.Group)!;
+    const scene = afterShots.nodes.find((node) => node.type === DIRECTOR_SCENE_TYPE)!;
+
+    expect(shots).toHaveLength(2);
+    expect(shots.map((shot) => shot.title)).toEqual(["镜 1-1 · 图", "镜 1-2 · 视频"]);
+    // 与场景同一行、排在场景右侧
+    expect(shots[0].position.y).toBe(scene.position.y);
+    expect(shots[0].position.x).toBeGreaterThan(scene.position.x + scene.width);
+    // 归进组：侧边栏才能按组展开成树
     shots.forEach((shot) => expect(shot.metadata?.groupId).toBe(group.id));
-
-    // 连线：人物→场景 2 条 + 场景→分镜 2 条
-    const sceneNode = byType(DIRECTOR_SCENE_TYPE)[0];
-    expect(result.connections.filter((connection) => connection.toNodeId === sceneNode.id)).toHaveLength(2);
-    expect(result.connections.filter((connection) => connection.fromNodeId === sceneNode.id)).toHaveLength(2);
-
-    // 分镜记住所属场景，点生图时才能自动接上场景与人物
-    expect(shots[0].metadata?.directorMeta).toMatchObject({ kind: "shot", sceneNodeId: sceneNode.id, index: 1 });
-    expect(shots[1].metadata?.directorMeta).toMatchObject({ kind: "shot", sceneNodeId: sceneNode.id, index: 2 });
-
-    // 镜号在场景内递增，并写进正文
+    // 记住所属场景，点生图时才能自动接上场景与人物
+    shots.forEach((shot) => expect(shot.metadata?.directorMeta).toMatchObject({ kind: "shot", sceneNodeId: scene.id }));
     expect(shots[0].metadata?.content).toContain("镜号：1-1");
-    expect(shots[1].metadata?.content).toContain("镜号：1-2");
+    expect(shots[1].metadata?.content).toContain("生成类型：视频");
+});
+
+test("重跑第二步：只删分镜与组，资产节点（人物 / 物品 / 章节 / 场景）原样保留", () => {
+    const { result } = applyAssets();
+    const afterShots = applyShots(result);
+
+    // 面板的清理逻辑：第二步重跑时删掉本导演台的分镜与组
+    const stale = afterShots.nodes.filter((node) => {
+        const meta = node.metadata?.directorMeta as { directorNodeId?: string; kind?: string } | undefined;
+        return meta?.directorNodeId === "director-1" && (meta.kind === "shot" || meta.kind === "group");
+    });
+    const cleaned = applyCanvasAgentOps(afterShots, [{ type: "delete_node", ids: stale.map((node) => node.id) }]);
+
+    expect(cleaned.nodes).toHaveLength(result.nodes.length);
+    expect(cleaned.nodes.some((node) => node.type === DIRECTOR_CHARACTER_TYPE)).toBe(true);
+    expect(cleaned.nodes.some((node) => node.type === DIRECTOR_PROP_TYPE)).toBe(true);
+    expect(cleaned.nodes.some((node) => node.type === DIRECTOR_SCENE_TYPE)).toBe(true);
+    // 人物 → 场景、物品 → 场景 的连线保留，场景 → 分镜 的连线随分镜删掉
+    expect(cleaned.connections).toHaveLength(3);
+});
+
+test("重跑第一步：清掉全部产物（场景变了，分镜必须重建）", () => {
+    const { result } = applyAssets();
+    const afterShots = applyShots(result);
+
+    const stale = afterShots.nodes.filter((node) => {
+        const meta = node.metadata?.directorMeta as { directorNodeId?: string } | undefined;
+        return meta?.directorNodeId === "director-1";
+    });
+    const cleaned = applyCanvasAgentOps(afterShots, [{ type: "delete_node", ids: stale.map((node) => node.id) }]);
+
+    expect(cleaned.nodes).toHaveLength(0);
+    expect(cleaned.connections).toHaveLength(0);
 });
 
 test("折叠：把 hidden 打到场景与分镜上，节点与连线都还在（只是不渲染）", () => {
-    const { characterPlan, scenePlan } = buildBothSteps();
-    const applied = applyCanvasAgentOps(applyCanvasAgentOps(emptySnapshot(), characterPlan.ops), scenePlan.ops);
-    const sceneNodeId = applied.nodes.find((node) => node.type === DIRECTOR_SCENE_TYPE)!.id;
-    const shotIds = applied.nodes.filter((node) => node.type === CanvasNodeType.Text).map((node) => node.id);
+    const { result } = applyAssets();
+    const afterShots = applyShots(result);
+    const scene = afterShots.nodes.find((node) => node.type === DIRECTOR_SCENE_TYPE)!;
+    const shotIds = afterShots.nodes.filter((node) => node.type === CanvasNodeType.Text).map((node) => node.id);
 
-    const collapsed = applyCanvasAgentOps(applied, [...shotIds, sceneNodeId].map((id) => ({ type: "update_node" as const, id, metadata: { hidden: true } })));
+    const collapsed = applyCanvasAgentOps(afterShots, [scene.id, ...shotIds].map((id) => ({ type: "update_node" as const, id, metadata: { hidden: true } })));
 
-    expect(collapsed.nodes).toHaveLength(applied.nodes.length); // 没有删节点
+    expect(collapsed.nodes).toHaveLength(afterShots.nodes.length); // 没有删节点
     expect(collapsed.nodes.filter((node) => node.metadata?.hidden)).toHaveLength(3);
-    expect(collapsed.connections).toHaveLength(applied.connections.length); // 连线也保留
-});
-
-test("重跑第二步：按归属标记能精确删掉上一轮产物，人物节点不受影响", () => {
-    const { characterPlan, scenePlan } = buildBothSteps();
-    const applied = applyCanvasAgentOps(applyCanvasAgentOps(emptySnapshot(), characterPlan.ops), scenePlan.ops);
-
-    // 面板的清理逻辑：删掉本导演台除人物外的所有节点
-    const stale = applied.nodes.filter((node) => {
-        const meta = node.metadata?.directorMeta as { directorNodeId?: string; kind?: string } | undefined;
-        return meta?.directorNodeId === "director-1" && meta.kind !== "character";
-    });
-    const cleaned = applyCanvasAgentOps(applied, [{ type: "delete_node", ids: stale.map((node) => node.id) }]);
-
-    expect(cleaned.nodes).toHaveLength(2);
-    expect(cleaned.nodes.every((node) => node.type === "sqc:character")).toBe(true);
-    expect(cleaned.connections).toHaveLength(0);
+    expect(collapsed.connections).toHaveLength(afterShots.connections.length); // 连线也保留
 });

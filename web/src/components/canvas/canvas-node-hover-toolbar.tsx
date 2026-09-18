@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
+import { isDirectorShot } from "@/lib/director/meta";
 import { formatBytes, getDataUrlByteSize } from "@/lib/image-utils";
 import { useCopyText } from "@/hooks/use-copy-text";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -22,7 +23,7 @@ type CanvasNodeHoverToolbarProps = {
     onDecreaseFont: (node: CanvasNodeData) => void;
     onIncreaseFont: (node: CanvasNodeData) => void;
     onToggleDialog: (node: CanvasNodeData) => void;
-    onGenerateImage: (node: CanvasNodeData) => void;
+    onGenerateImage: (node: CanvasNodeData, mode?: "image" | "video") => void;
     onUpload: (node: CanvasNodeData) => void;
     onDownload: (node: CanvasNodeData) => void;
     onSaveAsset: (node: CanvasNodeData) => void;
@@ -148,7 +149,10 @@ export function CanvasNodeHoverToolbar({
         ...(hasImage || hasVideo || isText ? [{ id: "saveAsset", title: t("common.addToAssets"), label: t("canvas.nodeToolbar.saveAsset"), icon: <FolderPlus className="size-4" />, onClick: () => onSaveAsset(node) }] : []),
         ...(hasImage || hasVideo || hasAudio ? [{ id: "download", title: t(hasAudio ? "canvas.nodeToolbar.downloadAudio" : hasVideo ? "canvas.nodeToolbar.downloadVideo" : "canvas.nodeToolbar.downloadImage"), label: t("common.download"), icon: <Download className="size-4" />, onClick: () => onDownload(node) }] : []),
         ...(isVideo ? [{ id: "edit", title: t("common.edit"), label: t("common.edit"), icon: <MessageSquare className="size-4" />, onClick: () => onToggleDialog(node) }] : []),
-        ...(isText ? [{ id: "generateImage", title: t("canvas.node.generateImage"), label: t("canvas.node.generate"), icon: <ImageIcon className="size-4" />, onClick: () => onGenerateImage(node) }] : []),
+        ...(isText ? [{ id: "generateImage", title: t("canvas.node.generateImage"), label: t("canvas.node.generate"), icon: <ImageIcon className="size-4" />, onClick: () => onGenerateImage(node, "image") }] : []),
+        // 导演台拆出来的分镜：额外给一个生视频入口。
+        // 生视频会把已经生成好的分镜图也接上作参考，一致性比纯文字好得多。
+        ...(isText && isDirectorShot(node) ? [{ id: "generateVideo", title: "生成这一镜的视频（自动带上已生成的分镜图作参考）", label: "生视频", icon: <Video className="size-4" />, onClick: () => onGenerateImage(node, "video") }] : []),
         ...(isConfig ? [{ id: "config", title: t("canvas.configNode.title"), label: t("canvas.configNode.title"), icon: <Settings2 className="size-4" />, onClick: () => onToggleDialog(node) }] : []),
         ...(isText ? [{ id: "decreaseFont", title: t("canvas.nodeToolbar.decreaseFont"), label: t("canvas.nodeToolbar.zoomOut"), icon: <Minus className="size-4" />, onClick: () => onDecreaseFont(node) }] : []),
         ...(isText ? [{ id: "increaseFont", title: t("canvas.nodeToolbar.increaseFont"), label: t("canvas.nodeToolbar.zoomIn"), icon: <Plus className="size-4" />, onClick: () => onIncreaseFont(node) }] : []),

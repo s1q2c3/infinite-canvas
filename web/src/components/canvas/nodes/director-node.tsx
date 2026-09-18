@@ -1,4 +1,4 @@
-import { AlertCircle, ChevronDown, ChevronRight, Clapperboard, Loader2, Star } from "lucide-react";
+import { AlertCircle, ChevronDown, ChevronRight, Clapperboard, Loader2, Package, Star } from "lucide-react";
 
 import { readDirectorMeta, readDirectorState } from "@/lib/director/meta";
 import type { DirectorNodeMeta, DirectorSceneMeta } from "@/types/canvas";
@@ -13,6 +13,24 @@ function NodeText({ text, color }: { text: string; color: string }) {
     );
 }
 
+/**
+ * 「生图 / 生视频」标记。
+ * 一眼看出这个框该产出图片还是视频 —— 分镜的生成类型由拆解时判定。
+ */
+function OutputBadge({ kind, color }: { kind: "image" | "video"; color: string }) {
+    const video = kind === "video";
+    return (
+        <span
+            className="shrink-0 rounded px-1.5 py-[1px] text-[9px] font-semibold"
+            style={{ background: video ? "rgba(249,115,22,.18)" : "rgba(16,185,129,.16)", color: video ? "#fb923c" : "#34d399" }}
+            title={video ? "这一框生成视频" : "这一框生成图片"}
+        >
+            {video ? "生视频" : "生图"}
+            <span style={{ color }} />
+        </span>
+    );
+}
+
 /** 导演台节点本体：只显示阶段摘要，操作都在下方面板里。 */
 export function DirectorNodeContent({ ctx }: { ctx: CanvasNodeContext }) {
     const { theme } = ctx;
@@ -20,6 +38,7 @@ export function DirectorNodeContent({ ctx }: { ctx: CanvasNodeContext }) {
     const nodes = ctx.getNodes();
     const count = (kind: DirectorNodeMeta["kind"]) => nodes.filter((node) => readDirectorMeta(node)?.kind === kind).length;
     const characters = count("character");
+    const props = count("prop");
     const scenes = count("scene");
     const shots = count("shot");
     const busy = state?.step === "extracting" || state?.step === "decomposing";
@@ -31,7 +50,7 @@ export function DirectorNodeContent({ ctx }: { ctx: CanvasNodeContext }) {
                 <>
                     <div className="flex items-center gap-2 text-sm font-medium" style={{ color: theme.node.text }}>
                         <Loader2 className="size-4 animate-spin" />
-                        {state?.step === "extracting" ? "正在提取人物…" : "正在拆解场景与分镜…"}
+                        {state?.step === "extracting" ? "正在提取人物 / 场景 / 物品…" : "正在拆分镜…"}
                     </div>
                     <div className="text-[11px] leading-5" style={{ color: theme.node.muted }}>
                         {state?.progress ? `${state.progress.current}/${state.progress.total} · ${state.progress.label}` : ""}
@@ -50,7 +69,7 @@ export function DirectorNodeContent({ ctx }: { ctx: CanvasNodeContext }) {
             ) : scenes || shots ? (
                 <>
                     <div className="text-sm font-semibold" style={{ color: theme.node.text }}>
-                        {characters} 人物 · {scenes} 场景 · {shots} 分镜
+                        {characters} 人物 · {props} 物品 · {scenes} 场景 · {shots} 分镜
                     </div>
                     <div className="text-[11px]" style={{ color: theme.node.muted }}>
                         单击打开导演台
@@ -64,7 +83,7 @@ export function DirectorNodeContent({ ctx }: { ctx: CanvasNodeContext }) {
                     <div className="text-[11px] leading-5" style={{ color: theme.node.muted }}>
                         单击打开，粘贴小说
                         <br />
-                        先提人物，再拆场景与分镜
+                        先拆人物 / 场景 / 物品，再拆分镜
                     </div>
                 </>
             )}
@@ -72,7 +91,7 @@ export function DirectorNodeContent({ ctx }: { ctx: CanvasNodeContext }) {
     );
 }
 
-/** 人物节点：显示设定正文，顶部标出主角 / 配角。 */
+/** 人物节点：显示设定正文，顶部标出主角 / 配角与生成类型。 */
 export function CharacterNodeContent({ ctx }: { ctx: CanvasNodeContext }) {
     const { node, theme } = ctx;
     const meta = readDirectorMeta(node);
@@ -83,6 +102,7 @@ export function CharacterNodeContent({ ctx }: { ctx: CanvasNodeContext }) {
             <div className="flex shrink-0 items-center gap-1.5 px-3 pt-2 text-[10px] font-medium" style={{ color: tier === "main" ? "#c4b5fd" : theme.node.faint }}>
                 {tier === "main" ? <Star className="size-3 fill-current" /> : null}
                 {tier === "main" ? "主角" : "配角"}
+                <OutputBadge kind="image" color={theme.node.faint} />
                 <span className="ml-auto truncate opacity-60">{node.title}</span>
             </div>
             <div className="min-h-0 flex-1">
@@ -92,21 +112,49 @@ export function CharacterNodeContent({ ctx }: { ctx: CanvasNodeContext }) {
     );
 }
 
-/** 场景节点：正文之外，把「出场人物」按人物节点的当前名字动态渲染出来。 */
+/** 重要物品节点：外观设定 + 生成类型标记。 */
+export function PropNodeContent({ ctx }: { ctx: CanvasNodeContext }) {
+    const { node, theme } = ctx;
+    return (
+        <div className="flex h-full w-full flex-col">
+            <div className="flex shrink-0 items-center gap-1.5 px-3 pt-2 text-[10px] font-medium" style={{ color: "#fcd34d" }}>
+                <Package className="size-3" />
+                重要物品
+                <OutputBadge kind="image" color={theme.node.faint} />
+                <span className="ml-auto truncate opacity-60">{node.title}</span>
+            </div>
+            <div className="min-h-0 flex-1">
+                <NodeText text={node.metadata?.content || ""} color={theme.node.text} />
+            </div>
+        </div>
+    );
+}
+
+/** 场景节点：正文之外，「出场人物 / 出现物品」按节点当前名字动态渲染。 */
 export function SceneNodeContent({ ctx }: { ctx: CanvasNodeContext }) {
     const { node, theme } = ctx;
     const meta = readDirectorMeta(node);
     const characterIds = meta?.kind === "scene" ? meta.characterIds : [];
-    // 取人物节点当前标题，所以改人名会自动跟着变
-    const names = characterIds.map((id) => ctx.getNode(id)?.title).filter((name): name is string => Boolean(name));
+    const propIds = meta?.kind === "scene" ? meta.propIds || [] : [];
+    // 取节点当前标题，所以改人名 / 改物品名会自动跟着变
+    const resolve = (ids: string[]) => ids.map((id) => ctx.getNode(id)?.title).filter((name): name is string => Boolean(name));
+    const names = resolve(characterIds);
+    const propNames = resolve(propIds);
 
     return (
         <div className="flex h-full w-full flex-col">
+            <div className="flex shrink-0 items-center gap-1.5 px-3 pt-2 text-[10px] font-medium" style={{ color: theme.node.faint }}>
+                <OutputBadge kind="image" color={theme.node.faint} />
+                <span className="ml-auto truncate opacity-60">{node.title}</span>
+            </div>
             <div className="min-h-0 flex-1">
                 <NodeText text={node.metadata?.content || ""} color={theme.node.text} />
             </div>
             <div className="shrink-0 border-t px-3 py-2 text-[10px] leading-4" style={{ borderColor: theme.node.stroke, color: names.length ? "#8ab4d8" : theme.node.faint }}>
                 出场人物：{names.length ? names.join("、") : "（无）"}
+            </div>
+            <div className="shrink-0 border-t px-3 py-2 text-[10px] leading-4" style={{ borderColor: theme.node.stroke, color: propNames.length ? "#fcd34d" : theme.node.faint }}>
+                出现物品：{propNames.length ? propNames.join("、") : "（无）"}
             </div>
         </div>
     );

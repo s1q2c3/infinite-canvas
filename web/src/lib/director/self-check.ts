@@ -6,7 +6,7 @@
  */
 
 import type { DirectorCollection } from "@/lib/director/collect";
-import { CHARACTER_FIELDS, SCENE_FIELDS, SHOT_FIELDS, type FieldSpec } from "@/lib/director/spec";
+import { CHARACTER_FIELDS, PROP_FIELDS, SCENE_FIELDS, SHOT_FIELDS, type FieldSpec } from "@/lib/director/spec";
 
 export type SelfCheckIssue = {
     level: "error" | "warn";
@@ -29,6 +29,13 @@ export function runSelfCheck(collection: DirectorCollection): SelfCheckIssue[] {
         const missing = missingRequired(CHARACTER_FIELDS, character.values);
         if (missing.length) {
             issues.push({ level: "error", scope: `人物「${character.name || "未命名"}」`, message: `缺必填字段：${missing.join("、")}`, nodeId: character.nodeId });
+        }
+    });
+
+    collection.props.forEach((prop) => {
+        const missing = missingRequired(PROP_FIELDS, prop.values);
+        if (missing.length) {
+            issues.push({ level: "error", scope: `物品「${prop.name || "未命名"}」`, message: `缺必填字段：${missing.join("、")}`, nodeId: prop.nodeId });
         }
     });
 

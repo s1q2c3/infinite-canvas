@@ -1,43 +1,44 @@
-import { Clapperboard, ListTree, MapPin, Sparkles, UserRound } from "lucide-react";
+import { Clapperboard, ListTree, MapPin, Package, Sparkles, UserRound } from "lucide-react";
 
-import { ChapterNodeContent, CharacterNodeContent, DirectorNodeContent, SceneNodeContent } from "@/components/canvas/nodes/director-node";
+import { ChapterNodeContent, CharacterNodeContent, DirectorNodeContent, PropNodeContent, SceneNodeContent } from "@/components/canvas/nodes/director-node";
 import { DirectorPanel } from "@/components/canvas/nodes/director-panel";
 import { registerNodeDefinitions } from "@/lib/canvas/node-registry";
-import { DIRECTOR_CHAPTER_TYPE, DIRECTOR_CHARACTER_TYPE, DIRECTOR_LAYOUT, DIRECTOR_NODE_TYPE, DIRECTOR_SCENE_TYPE } from "@/lib/director/layout";
-import { CHARACTER_FIELDS, parseFields, SCENE_FIELDS } from "@/lib/director/spec";
+import { DIRECTOR_CHAPTER_TYPE, DIRECTOR_CHARACTER_TYPE, DIRECTOR_LAYOUT, DIRECTOR_NODE_TYPE, DIRECTOR_PROP_TYPE, DIRECTOR_SCENE_TYPE, GENERATED_STACK_GAP } from "@/lib/director/layout";
+import { CHARACTER_FIELDS, parseFields, PROP_FIELDS, SCENE_FIELDS } from "@/lib/director/spec";
 import type { CanvasNodeData } from "@/types/canvas";
 import type { CanvasNodeContext, CanvasNodeDefinition, CanvasNodeResource, CanvasNodeToolbarItem } from "@/types/canvas-plugin";
 
 const iconClass = "size-5";
 
 /**
- * 人物 / 场景节点把正文暴露成生成输入。
+ * 人物 / 场景 / 物品节点把正文暴露成生成输入。
  * 带上名字前缀，模型同时收到多段上游文本时才分得清哪段是谁的设定。
  */
-const characterResource = (node: CanvasNodeData): CanvasNodeResource | null => {
+const makeResource = (prefix: string) => (node: CanvasNodeData): CanvasNodeResource | null => {
     const text = (node.metadata?.content || "").trim();
-    return text ? { kind: "text", text: `人物：${node.title}\n${text}` } : null;
+    return text ? { kind: "text", text: `${prefix}：${node.title}\n${text}` } : null;
 };
 
-const sceneResource = (node: CanvasNodeData): CanvasNodeResource | null => {
-    const text = (node.metadata?.content || "").trim();
-    return text ? { kind: "text", text: `场景：${node.title}\n${text}` } : null;
-};
+const characterResource = makeResource("人物");
+const sceneResource = makeResource("场景");
+const propResource = makeResource("物品");
 
-/**
- * 人物 / 场景节点的「生成形象图 / 生成场景图」按钮。
- *
- * 按节点里的「生图提示词」建一个生成配置节点、连上主体节点、打开配置面板。
- * 配置节点带 directorPhoto 标记（含造型标签），分镜生图时据此匹配参考图。
- */
-const makePhotoToolbar = (kind: "character" | "scene") => (ctx: CanvasNodeContext): CanvasNodeToolbarItem[] => [
+/** 人物 / 场景 / 物品节点的「生成形象图」按钮：按节点里的「生图提示词」建配置节点。 */
+const PHOTO_TOOLBAR_LABEL = {
+    character: { label: "生成形象图", suffix: "形象图", fields: CHARACTER_FIELDS, hint: "按「生图提示词」生成人物照片，供分镜作参考图" },
+    scene: { label: "生成场景图", suffix: "场景图", fields: SCENE_FIELDS, hint: "按「生图提示词」生成场景照片，供分镜作参考图" },
+    prop: { label: "生成物品图", suffix: "物品图", fields: PROP_FIELDS, hint: "按「生图提示词」生成物品照片，供分镜作参考图" },
+} as const;
+
+const makePhotoToolbar = (kind: "character" | "scene" | "prop") => (ctx: CanvasNodeContext): CanvasNodeToolbarItem[] => [
     {
         id: `director-${kind}-photo`,
-        title: kind === "character" ? "按「生图提示词」生成人物照片，供分镜作参考图" : "按「生图提示词」生成场景照片，供分镜作参考图",
-        label: kind === "character" ? "生成形象图" : "生成场景图",
+        title: PHOTO_TOOLBAR_LABEL[kind].hint,
+        label: PHOTO_TOOLBAR_LABEL[kind].label,
         icon: <Sparkles className="size-4" />,
         onClick: () => {
-            const values = parseFields(kind === "character" ? CHARACTER_FIELDS : SCENE_FIELDS, ctx.node.metadata?.content || "");
+            const config = PHOTO_TOOLBAR_LABEL[kind];
+            const values = parseFields(config.fields, ctx.node.metadata?.content || "");
             const prompt = (values.imagePrompt || "").trim();
             if (!prompt) {
                 window.alert("这个节点还没有填「生图提示词」字段，请先补上再生成。");
@@ -49,13 +50,15 @@ const makePhotoToolbar = (kind: "character" | "scene") => (ctx: CanvasNodeContex
                     type: "add_node",
                     id: configId,
                     nodeType: "config",
-                    title: kind === "character" ? `${ctx.node.title} · 形象图` : `${ctx.node.title} · 场景图`,
-                    x: ctx.node.position.x + ctx.node.width + 96,
-                    y: ctx.node.position.y,
+                    title: `${ctx.node.title} · ${config.suffix}`,
+                    // 生成结果落在正下方：布局给每个框都预留了下方空间
+                    x: ctx.node.position.x,
+                    y: ctx.node.position.y + ctx.node.height + GENERATED_STACK_GAP,
                     metadata: {
                         prompt,
                         generationMode: "image",
                         status: "idle",
+                        directorStack: true,
                         directorPhoto: { ownerId: ctx.node.id, kind, look: (values.look || "").trim() || undefined },
                     },
                 },
@@ -111,6 +114,19 @@ const DEFINITIONS: CanvasNodeDefinition[] = [
         Content: SceneNodeContent,
         resource: sceneResource,
         toolbar: makePhotoToolbar("scene"),
+    },
+    {
+        type: DIRECTOR_PROP_TYPE,
+        title: "重要物品",
+        icon: <Package className={iconClass} />,
+        description: "导演台拆解出的重要物品 / 道具；出现场景从连线自动取",
+        defaultSize: { width: DIRECTOR_LAYOUT.propWidth, height: DIRECTOR_LAYOUT.propHeight },
+        defaultMetadata: { content: "", status: "idle" },
+        minimapColor: "#fcd34d",
+        showInCreateMenu: false,
+        Content: PropNodeContent,
+        resource: propResource,
+        toolbar: makePhotoToolbar("prop"),
     },
     {
         type: DIRECTOR_CHAPTER_TYPE,

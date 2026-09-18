@@ -91,8 +91,15 @@ export type CanvasNodeMetadata = {
     director?: DirectorState;
     /** 导演台生成的节点（人物 / 场景 / 章节 / 分镜）的归属与结构化信息。 */
     directorMeta?: DirectorNodeMeta;
-    /** 该图片节点是某个人物 / 场景的照片。 */
+    /** 该图片节点是某个人物 / 场景 / 物品的照片。 */
     directorPhoto?: DirectorPhotoMeta;
+    /**
+     * 导演台建的生成配置节点：生成结果（图片 / 视频）要落在它**正下方**而不是右侧。
+     * 布局给每个框都留了下方空间，链条竖着排才能让一行分镜保持成一条横线、一眼看全。
+     */
+    directorStack?: boolean;
+    /** 该生成配置节点属于哪个分镜（分镜生图 / 生视频时打上）。 */
+    directorShotConfig?: string;
 
     // ── 以下为 v1 导演台遗留字段，仅用于识别并清理旧版拆解结果 ──
     /** @deprecated v1 章节节点：所属导演台节点 id。 */
@@ -106,7 +113,7 @@ export type CanvasNodeMetadata = {
 };
 
 /** 导演台节点类型。 */
-export type DirectorNodeKind = "character" | "scene" | "chapter" | "shot" | "group";
+export type DirectorNodeKind = "character" | "scene" | "prop" | "chapter" | "shot" | "group";
 /** 人物分级：主角（完整字段）/ 配角（精简）。龙套不建节点，只写进场景文本。 */
 export type DirectorCharacterTier = "main" | "support";
 
@@ -129,7 +136,12 @@ export type DirectorSceneMeta = DirectorOwned & {
     chapterNodeId?: string;
     /** 出场人物节点 id 列表；显示时取当前名字，所以改人名会自动同步。 */
     characterIds: string[];
+    /** 出现的重要物品节点 id 列表，同样存 id 不存名字。 */
+    propIds: string[];
 };
+
+/** 重要物品 / 道具节点。和人物一样是跨场景资产，所以也在第一步拆出来。 */
+export type DirectorPropMeta = DirectorOwned & { kind: "prop"; propId: string };
 
 /** 章节节点：同时承载该章原文。 */
 export type DirectorChapterMeta = DirectorOwned & {
@@ -152,16 +164,16 @@ export type DirectorShotMeta = DirectorOwned & {
     index: number;
 };
 
-export type DirectorNodeMeta = DirectorCharacterMeta | DirectorSceneMeta | DirectorChapterMeta | DirectorShotMeta | DirectorGroupMeta;
+export type DirectorNodeMeta = DirectorCharacterMeta | DirectorSceneMeta | DirectorChapterMeta | DirectorShotMeta | DirectorPropMeta | DirectorGroupMeta;
 
 /** 组节点：只用来在侧边栏把一场的分镜收成树，不参与生成。 */
 export type DirectorGroupMeta = DirectorOwned & { kind: "group" };
 
-/** 人物 / 场景照片节点：记录归属，供分镜生图时匹配参考图。 */
+/** 人物 / 场景 / 物品照片节点：记录归属，供分镜生成时匹配参考图。 */
 export type DirectorPhotoMeta = {
-    /** 照片主体：人物节点或场景节点 id。 */
+    /** 照片主体：人物 / 场景 / 物品节点 id。 */
     ownerId: string;
-    kind: "character" | "scene";
+    kind: "character" | "scene" | "prop";
     /** 造型标签；人物有多套造型时用于匹配场景的「本场造型」。 */
     look?: string;
 };

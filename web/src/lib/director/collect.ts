@@ -1,18 +1,13 @@
-/**
- * 导演台数据归集：把画布上属于某个导演台的节点，整理成结构化的三层数据。
- *
- * 导出、一致性自检、面板统计都用它，避免三处各写一遍遍历逻辑。
- * 结构以画布节点为准（节点文字是唯一真相），所以这里每次都从节点现读。
- */
-
 import { readDirectorMeta } from "@/lib/director/meta";
-import { CHARACTER_FIELDS, parseFields, SCENE_FIELDS, SHOT_FIELDS } from "@/lib/director/spec";
+import { CHARACTER_FIELDS, parseFields, PROP_FIELDS, readShotOutputKind, SCENE_FIELDS, SHOT_FIELDS, type ShotOutputKind } from "@/lib/director/spec";
 import type { CanvasNodeData, DirectorCharacterTier } from "@/types/canvas";
 
 export type CollectedShot = {
     nodeId: string;
     index: number;
     code: string;
+    /** 这一镜该生图还是生视频。 */
+    output: ShotOutputKind;
     values: Record<string, string>;
     text: string;
     sceneNodeId: string;
@@ -26,6 +21,8 @@ export type CollectedScene = {
     text: string;
     characterIds: string[];
     characterNames: string[];
+    propIds: string[];
+    propNames: string[];
     shots: CollectedShot[];
 };
 
@@ -47,8 +44,16 @@ export type CollectedCharacter = {
     text: string;
 };
 
+export type CollectedProp = {
+    nodeId: string;
+    name: string;
+    values: Record<string, string>;
+    text: string;
+};
+
 export type DirectorCollection = {
     characters: CollectedCharacter[];
+    props: CollectedProp[];
     chapters: CollectedChapter[];
     /** 未归属到任何章节的场景（异常情况，自检会报）。 */
     orphanScenes: CollectedScene[];
@@ -61,6 +66,7 @@ export function collectDirectorData(nodes: CanvasNodeData[], directorNodeId: str
     const owned = nodes.filter((node) => readDirectorMeta(node)?.directorNodeId === directorNodeId);
 
     const characters: CollectedCharacter[] = [];
+    const props: CollectedProp[] = [];
     const sceneNodes: CanvasNodeData[] = [];
     const shotNodes: CanvasNodeData[] = [];
     const chapterNodes: CanvasNodeData[] = [];
@@ -71,6 +77,9 @@ export function collectDirectorData(nodes: CanvasNodeData[], directorNodeId: str
         if (meta.kind === "character") {
             const values = parseFields(CHARACTER_FIELDS, node.metadata?.content || "");
             characters.push({ nodeId: node.id, name: node.title || values.name || "", tier: meta.tier, values, text: node.metadata?.content || "" });
+        } else if (meta.kind === "prop") {
+            const values = parseFields(PROP_FIELDS, node.metadata?.content || "");
+            props.push({ nodeId: node.id, name: node.title || values.name || "", values, text: node.metadata?.content || "" });
         } else if (meta.kind === "scene") {
             sceneNodes.push(node);
         } else if (meta.kind === "shot") {
@@ -80,30 +89,37 @@ export function collectDirectorData(nodes: CanvasNodeData[], directorNodeId: str
         }
     });
 
-    const nameByNodeId = new Map(characters.map((character) => [character.nodeId, character.name]));
+    const nameByNodeId = new Map<string, string>([
+        ...characters.map((item) => [item.nodeId, item.name] as const),
+        ...props.map((item) => [item.nodeId, item.name] as const),
+    ]);
 
     const shotsByScene = new Map<string, CollectedShot[]>();
     shotNodes.forEach((node) => {
         const meta = readDirectorMeta(node);
         if (meta?.kind !== "shot") return;
-        const values = parseFields(SHOT_FIELDS, node.metadata?.content || "");
+        const text = node.metadata?.content || "";
+        const values = parseFields(SHOT_FIELDS, text);
         const list = shotsByScene.get(meta.sceneNodeId) || [];
         list.push({
             nodeId: node.id,
             index: meta.index,
             code: values.code || `${meta.index}`,
+            output: readShotOutputKind(text),
             values,
-            text: node.metadata?.content || "",
+            text,
             sceneNodeId: meta.sceneNodeId,
         });
         shotsByScene.set(meta.sceneNodeId, list);
     });
 
+    const sceneNodeById = new Map(sceneNodes.map((node) => [node.id, node] as const));
     const buildScene = (node: CanvasNodeData): CollectedScene | null => {
         const meta = readDirectorMeta(node);
         if (meta?.kind !== "scene") return null;
         const values = parseFields(SCENE_FIELDS, node.metadata?.content || "");
         const shots = (shotsByScene.get(node.id) || []).sort((a, b) => a.index - b.index);
+        const resolve = (ids: string[]) => ids.map((id) => nameByNodeId.get(id)).filter((name): name is string => Boolean(name));
         return {
             nodeId: node.id,
             order: meta.order,
@@ -111,7 +127,9 @@ export function collectDirectorData(nodes: CanvasNodeData[], directorNodeId: str
             values,
             text: node.metadata?.content || "",
             characterIds: meta.characterIds,
-            characterNames: meta.characterIds.map((id) => nameByNodeId.get(id)).filter((name): name is string => Boolean(name)),
+            characterNames: resolve(meta.characterIds),
+            propIds: meta.propIds || [],
+            propNames: resolve(meta.propIds || []),
             shots,
         };
     };
@@ -124,7 +142,7 @@ export function collectDirectorData(nodes: CanvasNodeData[], directorNodeId: str
             if (meta?.kind !== "chapter") return null;
             const chapterScenes = allScenes
                 .filter((scene) => {
-                    const sceneMeta = readDirectorMeta(sceneNodes.find((item) => item.id === scene.nodeId)!);
+                    const sceneMeta = readDirectorMeta(sceneNodeById.get(scene.nodeId)!);
                     return sceneMeta?.kind === "scene" && sceneMeta.chapterNodeId === node.id;
                 })
                 .sort((a, b) => a.order - b.order);
@@ -138,6 +156,7 @@ export function collectDirectorData(nodes: CanvasNodeData[], directorNodeId: str
 
     return {
         characters: characters.sort((a, b) => (a.tier === b.tier ? 0 : a.tier === "main" ? -1 : 1)),
+        props,
         chapters,
         orphanScenes,
         scenes: allScenes.sort((a, b) => a.order - b.order),

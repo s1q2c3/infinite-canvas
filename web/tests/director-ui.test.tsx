@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { ChapterNodeContent, CharacterNodeContent, DirectorNodeContent, SceneNodeContent } from "../src/components/canvas/nodes/director-node";
+import { ChapterNodeContent, CharacterNodeContent, DirectorNodeContent, PropNodeContent, SceneNodeContent } from "../src/components/canvas/nodes/director-node";
 import { DirectorPanel } from "../src/components/canvas/nodes/director-panel";
 import { canvasThemes } from "../src/lib/canvas-theme";
-import { DIRECTOR_CHAPTER_TYPE, DIRECTOR_CHARACTER_TYPE, DIRECTOR_NODE_TYPE, DIRECTOR_SCENE_TYPE } from "../src/lib/director/layout";
+import { DIRECTOR_CHAPTER_TYPE, DIRECTOR_CHARACTER_TYPE, DIRECTOR_NODE_TYPE, DIRECTOR_PROP_TYPE, DIRECTOR_SCENE_TYPE } from "../src/lib/director/layout";
 import type { CanvasConnection, CanvasNodeData, CanvasNodeMetadata } from "../src/types/canvas";
 import type { CanvasNodeContext } from "../src/types/canvas-plugin";
 
@@ -74,6 +74,19 @@ const characterNode: CanvasNodeData = {
     },
 };
 
+const propNode: CanvasNodeData = {
+    id: "prop-node-1",
+    type: DIRECTOR_PROP_TYPE,
+    title: "泛黄的信封",
+    position: { x: 0, y: 550 },
+    width: 240,
+    height: 160,
+    metadata: {
+        content: "名称：泛黄的信封\n类别：信物\n外观：米黄色牛皮纸，边角磨毛",
+        directorMeta: { kind: "prop", directorNodeId: DIRECTOR, propId: "p1" },
+    },
+};
+
 const sceneNode: CanvasNodeData = {
     id: "scene-node-1",
     type: DIRECTOR_SCENE_TYPE,
@@ -83,19 +96,19 @@ const sceneNode: CanvasNodeData = {
     height: 190,
     metadata: {
         content: "场景名：便利店门口\n地点：城东便利店",
-        directorMeta: { kind: "scene", directorNodeId: DIRECTOR, sceneId: "s1", order: 1, chapterNodeId: "chapter-node-1", characterIds: ["char-node-1"] },
+        directorMeta: { kind: "scene", directorNodeId: DIRECTOR, sceneId: "s1", order: 1, chapterNodeId: "chapter-node-1", characterIds: ["char-node-1"], propIds: ["prop-node-1"] },
     },
 };
 
 const shotNode: CanvasNodeData = {
     id: "shot-node-1",
     type: "text",
-    title: "镜 1-1",
+    title: "镜 1-1 · 图",
     position: { x: 0, y: 1000 },
     width: 340,
     height: 240,
     metadata: {
-        content: "镜号：1-1\n景别：全景\n画面：小满背对镜头锁门",
+        content: "镜号：1-1\n生成类型：图\n景别：全景\n画面：小满背对镜头锁门",
         directorMeta: { kind: "shot", directorNodeId: DIRECTOR, shotId: "k1", sceneNodeId: "scene-node-1", index: 1 },
     },
 };
@@ -110,19 +123,19 @@ const chapterNode: CanvasNodeData = {
     metadata: { content: "第一章 雨夜重逢", directorMeta: { kind: "chapter", directorNodeId: DIRECTOR, chapterId: "h1", order: 1, chapterText: "外面在下雨。" } },
 };
 
-const graph = [directorNode, characterNode, chapterNode, sceneNode, shotNode];
+const graph = [directorNode, characterNode, propNode, chapterNode, sceneNode, shotNode];
 
 test("导演台节点：空状态提示两步流程", () => {
     const { ctx } = makeCtx(directorNode);
     const html = renderToStaticMarkup(<DirectorNodeContent ctx={ctx} />);
     expect(html).toContain("导演台");
-    expect(html).toContain("先提人物");
+    expect(html).toContain("先拆人物 / 场景 / 物品");
 });
 
-test("导演台节点：有内容时显示人物 / 场景 / 分镜统计", () => {
+test("导演台节点：有内容时显示人物 / 物品 / 场景 / 分镜统计", () => {
     const { ctx } = makeCtx(directorNode, graph);
     const html = renderToStaticMarkup(<DirectorNodeContent ctx={ctx} />);
-    expect(html).toContain("1 人物 · 1 场景 · 1 分镜");
+    expect(html).toContain("1 人物 · 1 物品 · 1 场景 · 1 分镜");
 });
 
 test("导演台节点：拆解中显示进度，失败显示错误", () => {
@@ -131,7 +144,7 @@ test("导演台节点：拆解中显示进度，失败显示错误", () => {
         metadata: { content: "", status: "idle", director: { model: "m", step: "decomposing", progress: { current: 2, total: 5, label: "第二章" } } },
     };
     const busyHtml = renderToStaticMarkup(<DirectorNodeContent ctx={makeCtx(busy).ctx} />);
-    expect(busyHtml).toContain("正在拆解场景与分镜");
+    expect(busyHtml).toContain("正在拆分镜");
     expect(busyHtml).toContain("2/5");
 
     const failed: CanvasNodeData = { ...directorNode, metadata: { content: "", status: "idle", director: { model: "m", step: "error", error: "接口未配置" } } };
@@ -140,17 +153,27 @@ test("导演台节点：拆解中显示进度，失败显示错误", () => {
     expect(failedHtml).toContain("接口未配置");
 });
 
-test("人物节点：显示分级与设定正文", () => {
+test("人物节点：显示分级、生成类型与设定正文", () => {
     const html = renderToStaticMarkup(<CharacterNodeContent ctx={makeCtx(characterNode).ctx} />);
     expect(html).toContain("主角");
+    expect(html).toContain("生图");
     expect(html).toContain("林小满");
     expect(html).toContain("齐肩黑发低马尾");
 });
 
-test("场景节点：出场人物按人物节点的当前标题动态渲染", () => {
-    const renamed = graph.map((node) => (node.id === "char-node-1" ? { ...node, title: "林满" } : node));
+test("物品节点：显示「重要物品」与生成类型", () => {
+    const html = renderToStaticMarkup(<PropNodeContent ctx={makeCtx(propNode).ctx} />);
+    expect(html).toContain("重要物品");
+    expect(html).toContain("生图");
+    expect(html).toContain("泛黄的信封");
+    expect(html).toContain("米黄色牛皮纸");
+});
+
+test("场景节点：出场人物与出现物品都按节点的当前标题动态渲染", () => {
+    const renamed = graph.map((node) => (node.id === "char-node-1" ? { ...node, title: "林满" } : node.id === "prop-node-1" ? { ...node, title: "旧信" } : node));
     const html = renderToStaticMarkup(<SceneNodeContent ctx={makeCtx(sceneNode, renamed).ctx} />);
     expect(html).toContain("出场人物：林满");
+    expect(html).toContain("出现物品：旧信");
     expect(html).not.toContain("林小满");
 });
 
@@ -174,29 +197,33 @@ test("章节节点：显示章号与场镜数，点击折叠本章场景与分�
     expect(ops[2]).toMatchObject({ id: "shot-node-1", metadata: { hidden: true } });
 });
 
-test("面板：渲染两步按钮、模型下拉、每章分镜档位", () => {
+test("面板：渲染两步按钮、模型下拉、每场分镜档位", () => {
     const html = renderToStaticMarkup(<DirectorPanel ctx={makeCtx(directorNode, graph).ctx} onClose={() => {}} />);
-    expect(html).toContain("① 提取人物");
-    expect(html).toContain("② 拆解场景与分镜");
-    expect(html).toContain("每章分镜");
+    expect(html).toContain("① 拆人物 / 场景 / 物品");
+    expect(html).toContain("② 拆分镜");
+    expect(html).toContain("每场分镜");
     expect(html).toContain("gpt-4o");
-    // 没提取人物前第二步不可用
+    // 没拆出场景前第二步不可用
     expect(html).toContain("disabled");
 });
 
-test("面板：已提取人物后显示人物标签与章节列表、进度看板", () => {
+
+test("面板：已拆出资产后显示资产标签、章节列表与五段进度看板", () => {
     const node: CanvasNodeData = {
         ...directorNode,
         metadata: { content: "", status: "idle", director: { model: "openai:gpt-4o", step: "done", sourceText: "第一章 雨夜重逢\n外面在下雨。" } },
     };
     const html = renderToStaticMarkup(<DirectorPanel ctx={makeCtx(node, graph).ctx} onClose={() => {}} />);
 
-    expect(html).toContain("已提取 1 个人物");
+    expect(html).toContain("1 人物 · 1 物品 · 1 场景");
     expect(html).toContain("林小满 · 主角");
+    expect(html).toContain("泛黄的信封 · 物品");
     expect(html).toContain("共 1 章 · 1 场 · 1 镜");
-    expect(html).toContain("① 人物照片");
-    expect(html).toContain("② 场景照片");
-    expect(html).toContain("③ 分镜图");
+    expect(html).toContain("人物照片");
+    expect(html).toContain("物品照片");
+    expect(html).toContain("场景照片");
+    expect(html).toContain("分镜图");
+    expect(html).toContain("分镜视频");
     expect(html).toContain("导出分镜表");
     expect(html).toContain("一致性自检");
     expect(html).toContain("清理旧版拆解");
@@ -204,7 +231,7 @@ test("面板：已提取人物后显示人物标签与章节列表、进度看�
     expect(html).toContain('value="openai:gpt-4o" selected=""');
 });
 
-test("节点注册：四种类型都进注册表，只有导演台出现在创建菜单", async () => {
+test("节点注册：五种类型都进注册表，只有导演台出现在创建菜单", async () => {
     const store = new Map<string, string>();
     (globalThis as unknown as { localStorage: unknown }).localStorage = {
         getItem: (key: string) => store.get(key) ?? null,
@@ -221,18 +248,20 @@ test("节点注册：四种类型都进注册表，只有导演台出现在创�
     expect(director?.autoOpenPanel).toBe(true);
     expect(typeof director?.Panel).toBe("function");
 
-    // 人物 / 场景 / 章节由拆解自动生成，不该出现在手动创建菜单里
-    [DIRECTOR_CHARACTER_TYPE, DIRECTOR_SCENE_TYPE, DIRECTOR_CHAPTER_TYPE].forEach((type) => {
+    // 人物 / 物品 / 场景 / 章节由拆解自动生成，不该出现在手动创建菜单里
+    [DIRECTOR_CHARACTER_TYPE, DIRECTOR_PROP_TYPE, DIRECTOR_SCENE_TYPE, DIRECTOR_CHAPTER_TYPE].forEach((type) => {
         const definition = registry.getNodeDefinition(type);
         expect(definition).toBeTruthy();
         expect(definition?.showInCreateMenu).toBe(false);
         expect(typeof definition?.Content).toBe("function");
     });
 
-    // 人物 / 场景要能把正文暴露成生成输入，否则生图拿不到设定
+    // 人物 / 物品 / 场景要能把正文暴露成生成输入，否则生成拿不到设定
     const characterResource = registry.getNodeDefinition(DIRECTOR_CHARACTER_TYPE)?.resource;
     expect(characterResource?.(characterNode)).toMatchObject({ kind: "text" });
-    expect(characterResource?.(characterNode)?.text).toContain("林小满");
+    expect(characterResource?.(characterNode)?.text).toContain("人物：林小满");
+    const propResource = registry.getNodeDefinition(DIRECTOR_PROP_TYPE)?.resource;
+    expect(propResource?.(propNode)?.text).toContain("物品：泛黄的信封");
     const sceneResource = registry.getNodeDefinition(DIRECTOR_SCENE_TYPE)?.resource;
-    expect(sceneResource?.(sceneNode)?.text).toContain("便利店门口");
+    expect(sceneResource?.(sceneNode)?.text).toContain("场景：便利店门口");
 });

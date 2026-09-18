@@ -3,11 +3,12 @@ import { saveAs } from "file-saver";
 import { AlertCircle, ChevronDown, ChevronRight, FileJson, Loader2, RefreshCw, ShieldCheck, Table2, Trash2, Wand2 } from "lucide-react";
 
 import type { CanvasAgentOp } from "@/lib/canvas/canvas-agent-ops";
-import { collectDirectorData } from "@/lib/director/collect";
-import { buildRoster, decomposeScenes, extractCharacters, type GenerateText } from "@/lib/director/decompose";
+import { collectDirectorData, type CollectedScene } from "@/lib/director/collect";
+import { buildRoster, decomposeShots, extractAssets, type GenerateText } from "@/lib/director/decompose";
 import { toDirectorJson, toScript, toShotCsv } from "@/lib/director/export";
-import { buildCharacterPlan, buildSceneShotPlan, characterRowHeight, DIRECTOR_LAYOUT } from "@/lib/director/layout";
+import { assetOrigin, buildAssetPlan, buildShotPlan, DIRECTOR_LAYOUT, type SceneGeometry, type ShotAssignment } from "@/lib/director/layout";
 import { splitNovelChapters } from "@/lib/director/novel-split";
+import type { ParsedScene } from "@/lib/director/parse";
 import { findDownstreamImages } from "@/lib/director/photos";
 import { runSelfCheck, summarizeIssues, type SelfCheckIssue } from "@/lib/director/self-check";
 import type { DirectorNodeKind, DirectorState } from "@/types/canvas";
@@ -17,19 +18,29 @@ import { readDirectorMeta, readDirectorState } from "@/lib/director/meta";
 
 const SHOT_COUNT_OPTIONS = [
     { value: 0, label: "自动（推荐）" },
+    { value: 3, label: "约 3 个" },
     { value: 5, label: "约 5 个" },
     { value: 8, label: "约 8 个" },
-    { value: 12, label: "约 12 个" },
-    { value: 20, label: "约 20 个" },
 ];
 
-/** 导演台面板：① 提取人物 → 你审核 → ② 拆解场景与分镜。 */
+/** 把画布上归集到的场景转回解析结构，供第二步作为「已定好的场景清单」。 */
+function toParsedScene(scene: CollectedScene): ParsedScene {
+    return {
+        values: scene.values,
+        characterNames: scene.characterNames,
+        propNames: scene.propNames,
+        look: (scene.values.look || "").trim(),
+        shots: [],
+    };
+}
+
+/** 导演台面板：① 拆人物 / 场景 / 物品 → 你审核 → ② 只拆分镜。 */
 export function DirectorPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClose: () => void }) {
     const { theme, node } = ctx;
     const state = readDirectorState(node);
     const [novelText, setNovelText] = useState(state?.sourceText || "");
     const [model, setModel] = useState(state?.model || ctx.ai.defaultModel("text"));
-    const [shotsPerChapter, setShotsPerChapter] = useState(state?.shotsPerChapter ?? 0);
+    const [shotsPerScene, setShotsPerScene] = useState(state?.shotsPerChapter ?? 0);
     const [error, setError] = useState("");
     const [issues, setIssues] = useState<SelfCheckIssue[] | null>(null);
     const [expandedChapterId, setExpandedChapterId] = useState<string | null>(null);
@@ -53,12 +64,35 @@ export function DirectorPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClos
         return result.text;
     };
 
-    /** 人物行铺在导演台节点正下方。 */
-    const characterOrigin = { x: node.position.x, y: node.position.y + node.height + DIRECTOR_LAYOUT.charToContentGapY };
-    /** 章节块铺在人物行下方。 */
-    const contentOrigin = { x: characterOrigin.x, y: characterOrigin.y + characterRowHeight() + DIRECTOR_LAYOUT.charToContentGapY };
+    const origin = assetOrigin(node);
 
-    const runExtract = async () => {
+    const ownedNodes = (kinds: DirectorNodeKind[]) =>
+        nodes.filter((item) => {
+            const meta = readDirectorMeta(item);
+            return meta?.directorNodeId === node.id && kinds.includes(meta.kind);
+        });
+
+    /** 第一步重跑会重建场景，所以分镜 / 组也一并清掉。 */
+    const cleanupAllOps = (): CanvasAgentOp[] => {
+        const ids = ownedNodes(["character", "prop", "chapter", "scene", "shot", "group"]).map((item) => item.id);
+        return ids.length ? [{ type: "delete_node", ids }] : [];
+    };
+
+    /** 只删分镜与组（第二步重跑用），资产节点不动。 */
+    const cleanupShotOps = (): CanvasAgentOp[] => {
+        const ids = ownedNodes(["shot", "group"]).map((item) => item.id);
+        return ids.length ? [{ type: "delete_node", ids }] : [];
+    };
+
+    /** 人物 + 物品节点当前内容拼成资产表（用户可能改过，所以现读节点）。 */
+    const currentRoster = () =>
+        buildRoster([
+            ...ownedNodes(["character"]).map((item) => ({ name: item.title, text: item.metadata?.content || "" })),
+            ...ownedNodes(["prop"]).map((item) => ({ name: item.title, text: item.metadata?.content || "" })),
+        ]);
+
+    /** 第一步：拆人物 / 场景 / 物品。 */
+    const runExtractAssets = async () => {
         const chapters = splitNovelChapters(novelText);
         if (!chapters.length) return setError("没有识别到可拆解的正文，请检查是否粘贴了小说内容。");
         if (!model) return setError("请先选择用于拆解的模型。");
@@ -67,22 +101,22 @@ export function DirectorPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClos
         setIssues(null);
         const controller = new AbortController();
         abortRef.current = controller;
+        const cleanup = cleanupAllOps();
+        if (cleanup.length) ctx.applyOps(cleanup);
 
-        // 人物整体重建：只删人物节点，场景 / 分镜等留到第二步再处理
-        const stale = nodes.filter((item) => readDirectorMeta(item)?.directorNodeId === node.id && readDirectorMeta(item)?.kind === "character");
-        if (stale.length) ctx.applyOps([{ type: "delete_node", ids: stale.map((item) => item.id) }]);
-
-        const base: Partial<DirectorState> = { model, sourceText: novelText, chapterCount: chapters.length, shotsPerChapter };
-        save({ ...base, step: "extracting", progress: { current: 0, total: 1, label: "准备中" } });
+        const base: Partial<DirectorState> = { model, sourceText: novelText, shotsPerChapter: shotsPerScene, chapterCount: chapters.length };
+        save({ ...base, step: "extracting", progress: { current: 0, total: chapters.length + 1, label: "准备中" } });
 
         try {
-            const characters = await extractCharacters(chapters, generateText, {
+            const bundle = await extractAssets(chapters, generateText, {
                 model,
                 signal: controller.signal,
                 onProgress: (event) => save({ ...base, step: "extracting", progress: event }),
             });
-            if (!characters.length) throw new Error("模型没有提取到任何人物，请检查小说内容或换一个模型。");
-            const plan = buildCharacterPlan({ directorNodeId: node.id, characters, origin: characterOrigin });
+            if (!bundle.characters.length && !bundle.props.length && !bundle.chapters.some((chapter) => chapter.scenes.length)) {
+                throw new Error("模型没有拆出任何内容，请检查小说文本或换一个模型。");
+            }
+            const plan = buildAssetPlan({ directorNodeId: node.id, bundle, origin });
             ctx.applyOps(plan.ops);
             save({ ...base, step: "extracted", progress: undefined, error: undefined });
         } catch (err) {
@@ -94,68 +128,81 @@ export function DirectorPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClos
         }
     };
 
-    /** 该导演台生成的节点，按类型筛。 */
-    const ownedNodes = (kinds: DirectorNodeKind[]) =>
-        nodes.filter((item) => {
-            const meta = readDirectorMeta(item);
-            return meta?.directorNodeId === node.id && kinds.includes(meta.kind);
-        });
 
-    /** 删除第二步产物（章节 / 场景 / 分镜 / 组）；人物节点不动。 */
-    const cleanupSceneOps = (): CanvasAgentOp[] => {
-        const ids = ownedNodes(["chapter", "scene", "shot", "group"]).map((item) => item.id);
-        return ids.length ? [{ type: "delete_node", ids }] : [];
+    /** 场景节点的当前几何位置，第二步据此把分镜摆在场景右侧。 */
+    const sceneGeometry = () => {
+        const geometry = new Map<string, SceneGeometry>();
+        collection.scenes.forEach((scene) => {
+            const item = nodes.find((candidate) => candidate.id === scene.nodeId);
+            if (item) geometry.set(scene.nodeId, { x: item.position.x, y: item.position.y, width: item.width, order: scene.order });
+        });
+        return geometry;
     };
 
-    /** 人物节点当前内容拼成人物表（用户可能改过，所以现读节点而不是用拆解时的结果）。 */
-    const currentRoster = () =>
-        buildRoster(
-            nodes
-                .filter((item) => {
-                    const meta = readDirectorMeta(item);
-                    return meta?.directorNodeId === node.id && meta.kind === "character";
-                })
-                .map((item) => ({ name: item.title, text: item.metadata?.content || "" })),
-        );
-
-    const characterLookup = () => {
-        const lookup = new Map<string, string>();
-        nodes.forEach((item) => {
-            const meta = readDirectorMeta(item);
-            if (meta?.directorNodeId === node.id && meta.kind === "character") lookup.set(item.title, item.id);
-        });
-        return lookup;
+    /** 把模型返回的「按场景分组的分镜」对到画布上的场景节点（先精确匹配，再模糊匹配）。 */
+    const matchAssignments = (chapterIndex: number, groups: Array<{ sceneName: string; shots: Array<{ values: Record<string, string> }> }>): ShotAssignment[] => {
+        const chapter = collection.chapters[chapterIndex];
+        if (!chapter) return [];
+        const normalize = (value: string) => value.replace(/\s/g, "").trim();
+        return groups
+            .map((group) => {
+                const wanted = normalize(group.sceneName);
+                const scene =
+                    chapter.scenes.find((item) => normalize(item.name) === wanted) ||
+                    chapter.scenes.find((item) => wanted && (normalize(item.name).includes(wanted) || wanted.includes(normalize(item.name))));
+                return scene ? { sceneNodeId: scene.nodeId, shots: group.shots } : null;
+            })
+            .filter((item): item is ShotAssignment => Boolean(item));
     };
 
-    /** 第二步：逐章拆解场景与分镜。 */
-    const runDecompose = async () => {
-        const chapters = splitNovelChapters(novelText || state?.sourceText || "");
-        if (!chapters.length) return setError("找不到小说原文，请重新粘贴后再拆解。");
-        if (!model) return setError("请先选择用于拆解的模型。");
+    /** 某一章的分镜与组节点 id（重拆那一章时只删这些）。 */
+    const shotsOfChapterIds = (chapterIndex: number): string[] => {
+        const chapter = collection.chapters[chapterIndex];
+        if (!chapter) return [];
+        const sceneIds = new Set(chapter.scenes.map((scene) => scene.nodeId));
+        const shots = ownedNodes(["shot"]).filter((item) => {
+            const meta = readDirectorMeta(item);
+            return meta?.kind === "shot" && sceneIds.has(meta.sceneNodeId);
+        });
+        const groupIds = shots.map((item) => item.metadata?.groupId).filter((id): id is string => Boolean(id));
+        return [...shots.map((item) => item.id), ...groupIds];
+    };
+
+    /** 第二步：只为已经定好的场景写分镜。传 only 就只重拆指定章。 */
+    const runDecomposeShots = async (only?: number[]) => {
+        if (!collection.chapters.length) return setError("还没有场景，请先执行第 ① 步。");
         const roster = currentRoster();
-        if (!roster.trim()) return setError("还没有人物表，请先执行第 ① 步。");
+        if (!roster.trim()) return setError("资产表是空的，请先执行第 ① 步。");
 
         setError("");
         setIssues(null);
         const controller = new AbortController();
         abortRef.current = controller;
-        const cleanup = cleanupSceneOps();
-        if (cleanup.length) ctx.applyOps(cleanup);
 
-        const base: Partial<DirectorState> = { model, shotsPerChapter, chapterCount: chapters.length };
-        save({ ...base, step: "decomposing", progress: { current: 0, total: chapters.length, label: "准备中" } });
+        const staleIds = only?.length ? only.flatMap((index) => shotsOfChapterIds(index)) : ownedNodes(["shot", "group"]).map((item) => item.id);
+        if (staleIds.length) ctx.applyOps([{ type: "delete_node", ids: staleIds }]);
+
+        const chapters = collection.chapters.map((chapter) => ({ title: chapter.title, body: chapter.chapterText }));
+        const scenesByChapter = collection.chapters.map((chapter) => chapter.scenes.map(toParsedScene));
+        const geometry = sceneGeometry();
+
+        const base: Partial<DirectorState> = { model, shotsPerChapter: shotsPerScene };
+        save({ ...base, step: "decomposing", progress: { current: 0, total: only?.length ?? chapters.length, label: "准备中" } });
 
         try {
-            const results = await decomposeScenes(chapters, generateText, {
+            const results = await decomposeShots(chapters, generateText, {
                 model,
                 roster,
-                shotsPerChapter,
+                scenesByChapter,
+                shotsPerScene,
                 signal: controller.signal,
+                only,
                 onProgress: (event) => save({ ...base, step: "decomposing", progress: event }),
             });
-            const plan = buildSceneShotPlan({ directorNodeId: node.id, chapters: results, characterLookup: characterLookup(), origin: contentOrigin });
+            const assignments = results.flatMap((result) => matchAssignments(result.chapterIndex, result.groups));
+            if (!assignments.length) throw new Error("模型没有按场景名返回分镜，请重试或换一个模型。");
+            const plan = buildShotPlan({ directorNodeId: node.id, assignments, geometry });
             ctx.applyOps(plan.ops);
-            // 原文已经按章分散写进章节节点，这里清掉输入态的大文本
             save({ ...base, step: "done", progress: undefined, error: undefined, sourceText: undefined });
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
@@ -166,7 +213,7 @@ export function DirectorPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClos
         }
     };
 
-    /** 某一章的场景 / 分镜 / 组节点 id（重拆与删除都用）。 */
+    /** 某一章的场景 / 分镜 / 组节点 id（删除与折叠都用）。 */
     const chapterChildIds = (chapterNodeId: string) => {
         const scenes = nodes.filter((item) => {
             const meta = readDirectorMeta(item);
@@ -181,49 +228,13 @@ export function DirectorPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClos
         return { sceneIds: scenes.map((item) => item.id), shotIds: shots.map((item) => item.id), groupIds };
     };
 
-    /** 只重拆某一章：删掉本章旧节点，就地重新拆。 */
+    /** 只重拆某一章的分镜：场景不动，只重建这一章的分镜与组。 */
     const rerunChapter = async (chapterOrder: number) => {
-        const chapters = splitNovelChapters(novelText || state?.sourceText || "");
-        const raw = chapters[chapterOrder - 1];
-        const chapterNode = collection.chapters.find((item) => item.order === chapterOrder);
-        if (!raw || !chapterNode) return setError("找不到这一章的原文，请重新整体拆解一次。");
-        const nodeData = nodes.find((item) => item.id === chapterNode.nodeId);
-        if (!nodeData) return setError("找不到这一章的节点，请重新整体拆解一次。");
-        const roster = currentRoster();
-        if (!roster.trim()) return setError("人物表是空的，请先执行第 ① 步。");
-        // 就地重建：记住原位置，删掉旧节点后从这里重新铺
-        const origin = { x: nodeData.position.x, y: nodeData.position.y };
-
-        setError("");
-        setIssues(null);
-        const controller = new AbortController();
-        abortRef.current = controller;
-        const child = chapterChildIds(chapterNode.nodeId);
-        const stale = [chapterNode.nodeId, ...child.sceneIds, ...child.shotIds, ...child.groupIds];
-        if (stale.length) ctx.applyOps([{ type: "delete_node", ids: stale }]);
-
-        const base: Partial<DirectorState> = { model, shotsPerChapter };
-        save({ ...base, step: "decomposing", progress: { current: 0, total: 1, label: raw.title } });
-        try {
-            const results = await decomposeScenes(chapters, generateText, {
-                model,
-                roster,
-                shotsPerChapter,
-                signal: controller.signal,
-                only: [chapterOrder - 1],
-                onProgress: (event) => save({ ...base, step: "decomposing", progress: event }),
-            });
-            const plan = buildSceneShotPlan({ directorNodeId: node.id, chapters: results, characterLookup: characterLookup(), origin });
-            ctx.applyOps(plan.ops);
-            save({ ...base, step: "done", progress: undefined, error: undefined });
-        } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            setError(message);
-            save({ ...base, step: "error", error: message, progress: undefined });
-        } finally {
-            abortRef.current = null;
-        }
+        const chapter = collection.chapters.find((item) => item.order === chapterOrder);
+        if (!chapter) return setError("找不到这一章，请重新整体拆解一次。");
+        await runDecomposeShots([chapterOrder - 1]);
     };
+
 
     /** 删除一章及其全部场景 / 分镜。 */
     const deleteChapter = (chapterOrder: number) => {
@@ -273,18 +284,39 @@ export function DirectorPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClos
         if (!result.length) setError("");
     };
 
-    // 生成进度看板：数一下每个阶段已经产出的图片
-    const shotImages = collection.shots.filter((shot) => findDownstreamImages(shot.nodeId, nodes, connections).length).length;
-    const characterImages = collection.characters.filter((item) => findDownstreamImages(item.nodeId, nodes, connections).length).length;
-    const sceneImages = collection.scenes.filter((item) => findDownstreamImages(item.nodeId, nodes, connections).length).length;
+    // 生成进度看板：沿「框 → 配置节点 → 图片/视频节点」两跳数已经产出的媒体
+    const downstreamTypes = (nodeId: string): string[] => {
+        const found: string[] = [];
+        connections
+            .filter((connection) => connection.fromNodeId === nodeId)
+            .forEach((connection) => {
+                const target = nodes.find((item) => item.id === connection.toNodeId);
+                if (!target) return;
+                found.push(target.type);
+                connections
+                    .filter((next) => next.fromNodeId === target.id)
+                    .forEach((next) => {
+                        const grand = nodes.find((item) => item.id === next.toNodeId);
+                        if (grand) found.push(grand.type);
+                    });
+            });
+        return found;
+    };
+    const hasMedia = (nodeId: string, type: string) => downstreamTypes(nodeId).includes(type);
+    const characterImages = collection.characters.filter((item) => hasMedia(item.nodeId, "image")).length;
+    const propImages = collection.props.filter((item) => hasMedia(item.nodeId, "image")).length;
+    const sceneImages = collection.scenes.filter((item) => hasMedia(item.nodeId, "image")).length;
+    const shotImages = collection.shots.filter((item) => hasMedia(item.nodeId, "image")).length;
+    const videoShots = collection.shots.filter((shot) => shot.output === "video");
+    const shotVideos = videoShots.filter((item) => hasMedia(item.nodeId, "video")).length;
 
     const panelStyle = { background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text };
     const inputStyle = { background: theme.node.panel, borderColor: theme.node.stroke, color: theme.node.text };
-    const extracted = collection.characters.length > 0;
+    const extracted = collection.scenes.length > 0 || collection.characters.length > 0;
 
     const stageRow = (label: string, done: number, total: number, color: string, hint: string) => (
         <div className="flex items-center gap-2.5 text-[11px]">
-            <span className="w-[68px] shrink-0" style={{ color: total ? color : theme.node.faint }}>
+            <span className="w-[72px] shrink-0" style={{ color: total ? color : theme.node.faint }}>
                 {label}
             </span>
             <div className="h-1.5 flex-1 overflow-hidden rounded-full" style={{ background: theme.node.stroke }}>
@@ -293,7 +325,7 @@ export function DirectorPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClos
             <span className="w-[46px] shrink-0 text-right" style={{ color: theme.node.muted }}>
                 {done}/{total}
             </span>
-            <span className="w-[52px] shrink-0 text-right text-[10px]" style={{ color: theme.node.faint }}>
+            <span className="w-[64px] shrink-0 text-right text-[10px]" style={{ color: theme.node.faint }}>
                 {hint}
             </span>
         </div>
@@ -309,13 +341,13 @@ export function DirectorPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClos
             </div>
 
             {/* 步骤条 */}
-            <div className="mb-3 flex items-center gap-2 text-[11px]">
+            <div className="mb-3 flex flex-wrap items-center gap-2 text-[11px]">
                 <span className="rounded-full px-2.5 py-1 font-semibold" style={{ background: extracted ? "#4c1d95" : theme.node.panel, color: extracted ? "#ddd6fe" : theme.node.muted }}>
-                    ① 提取人物
+                    ① 人物 / 场景 / 物品
                 </span>
                 <span style={{ color: theme.node.faint }}>──▶</span>
-                <span className="rounded-full px-2.5 py-1 font-semibold" style={{ background: collection.scenes.length ? "#0c4a6e" : theme.node.panel, color: collection.scenes.length ? "#bae6fd" : theme.node.muted }}>
-                    ② 拆解场景与分镜
+                <span className="rounded-full px-2.5 py-1 font-semibold" style={{ background: collection.shots.length ? "#0c4a6e" : theme.node.panel, color: collection.shots.length ? "#bae6fd" : theme.node.muted }}>
+                    ② 分镜
                 </span>
                 <span className="ml-auto text-[10px]" style={{ color: theme.node.faint }}>
                     模型独立于全局默认
@@ -328,7 +360,7 @@ export function DirectorPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClos
             <textarea
                 value={novelText}
                 onChange={(event) => setNovelText(event.target.value)}
-                placeholder="在这里粘贴小说全文。先点「① 提取人物」，审核修改人物设定后，再点「② 拆解场景与分镜」。"
+                placeholder="在这里粘贴小说全文。先点「① 拆人物 / 场景 / 物品」，审核修改后，再点「② 拆分镜」。"
                 className="thin-scrollbar h-24 w-full resize-y rounded-xl border p-2.5 text-[11px] leading-5 outline-none"
                 style={inputStyle}
             />
@@ -343,8 +375,8 @@ export function DirectorPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClos
                         </option>
                     ))}
                 </select>
-                <span style={{ color: theme.node.muted }}>每章分镜</span>
-                <select value={shotsPerChapter} onChange={(event) => setShotsPerChapter(Number(event.target.value))} className="rounded-lg border px-2 py-1.5 text-[11px] outline-none" style={inputStyle}>
+                <span style={{ color: theme.node.muted }}>每场分镜</span>
+                <select value={shotsPerScene} onChange={(event) => setShotsPerScene(Number(event.target.value))} className="rounded-lg border px-2 py-1.5 text-[11px] outline-none" style={inputStyle}>
                     {SHOT_COUNT_OPTIONS.map((item) => (
                         <option key={item.value} value={item.value}>
                             {item.label}
@@ -353,13 +385,13 @@ export function DirectorPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClos
                 </select>
                 <button
                     type="button"
-                    onClick={runExtract}
+                    onClick={runExtractAssets}
                     disabled={busy}
                     className="ml-auto flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[11px] font-semibold disabled:opacity-50"
                     style={{ ...inputStyle, borderColor: "#7c5cff", color: "#c4b5fd" }}
                 >
                     {state?.step === "extracting" ? <Loader2 className="size-3.5 animate-spin" /> : <Wand2 className="size-3.5" />}
-                    {extracted ? "重新提取人物" : "① 提取人物"}
+                    {extracted ? "重拆资产" : "① 拆人物 / 场景 / 物品"}
                 </button>
             </div>
 
@@ -367,7 +399,7 @@ export function DirectorPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClos
                 <div className="mt-3 text-[11px]">
                     <div className="mb-1.5 flex items-center justify-between" style={{ color: theme.node.muted }}>
                         <span>
-                            {state?.step === "extracting" ? "正在提取人物" : "正在拆解"}：{progress.label}
+                            {state?.step === "extracting" ? "正在拆资产" : "正在拆分镜"}：{progress.label}
                         </span>
                         <span>
                             {progress.current}/{progress.total}
@@ -386,11 +418,13 @@ export function DirectorPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClos
                 </div>
             ) : null}
 
-            {/* 人物表 */}
+            {/* 资产清单 */}
             {extracted ? (
                 <div className="mt-3 border-t pt-3" style={{ borderColor: theme.node.stroke }}>
-                    <div className="mb-1.5 flex items-center gap-2 text-[11px]">
-                        <span style={{ color: "#c4b5fd" }}>已提取 {collection.characters.length} 个人物</span>
+                    <div className="mb-1.5 flex flex-wrap items-center gap-2 text-[11px]">
+                        <span style={{ color: "#c4b5fd" }}>
+                            {collection.characters.length} 人物 · {collection.props.length} 物品 · {collection.scenes.length} 场景
+                        </span>
                         <span style={{ color: theme.node.faint }}>直接在画布上改节点文字即可审核</span>
                     </div>
                     <div className="flex flex-wrap gap-1.5">
@@ -407,6 +441,11 @@ export function DirectorPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClos
                                 {character.name} · {character.tier === "main" ? "主角" : "配角"}
                             </span>
                         ))}
+                        {collection.props.map((prop) => (
+                            <span key={prop.nodeId} className="rounded-md border px-2 py-0.5 text-[10px]" style={{ background: "#2a2110", borderColor: "#a16207", color: "#fcd34d" }}>
+                                {prop.name} · 物品
+                            </span>
+                        ))}
                     </div>
                 </div>
             ) : null}
@@ -415,15 +454,15 @@ export function DirectorPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClos
             <div className="mt-3 flex flex-wrap items-center gap-2 border-t pt-3 text-[11px]" style={{ borderColor: theme.node.stroke }}>
                 <button
                     type="button"
-                    onClick={runDecompose}
-                    disabled={busy || !extracted}
+                    onClick={() => runDecomposeShots()}
+                    disabled={busy || !collection.scenes.length}
                     className="flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[11px] font-semibold disabled:opacity-40"
                     style={{ ...inputStyle, borderColor: "#2d5f8f", color: "#bae6fd" }}
                 >
                     {state?.step === "decomposing" ? <Loader2 className="size-3.5 animate-spin" /> : <Wand2 className="size-3.5" />}
-                    {collection.scenes.length ? "重新拆解场景与分镜" : "② 拆解场景与分镜"}
+                    {collection.shots.length ? "重拆分镜" : "② 拆分镜"}
                 </button>
-                <span style={{ color: theme.node.faint }}>会读你改过的人物表；重跑只重建场景与分镜，人物节点不动</span>
+                <span style={{ color: theme.node.faint }}>场景已在第①步定好，这里只为它们写分镜；重拆只重建分镜，资产节点不动</span>
             </div>
 
             {/* 章节列表 */}
@@ -433,7 +472,7 @@ export function DirectorPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClos
                         <span>
                             共 {collection.chapters.length} 章 · {collection.scenes.length} 场 · {collection.shots.length} 镜
                         </span>
-                        <span>折叠 / 重拆本章 / 删除本章</span>
+                        <span>折叠 / 重拆本章分镜 / 删除本章</span>
                     </div>
                     <div className="thin-scrollbar max-h-56 overflow-y-auto rounded-xl border" style={{ borderColor: theme.node.stroke }}>
                         {collection.chapters.map((chapter) => (
@@ -456,7 +495,7 @@ export function DirectorPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClos
                                     <span className="shrink-0" style={{ color: theme.node.faint }}>
                                         {chapter.scenes.length} 场 {chapter.scenes.reduce((sum, scene) => sum + scene.shots.length, 0)} 镜
                                     </span>
-                                    <button type="button" onClick={() => rerunChapter(chapter.order)} disabled={busy} className="grid size-5 shrink-0 place-items-center rounded disabled:opacity-40" title="只重拆这一章">
+                                    <button type="button" onClick={() => rerunChapter(chapter.order)} disabled={busy} className="grid size-5 shrink-0 place-items-center rounded disabled:opacity-40" title="只重拆这一章的分镜">
                                         <RefreshCw className="size-3" />
                                     </button>
                                     <button type="button" onClick={() => deleteChapter(chapter.order)} disabled={busy} className="grid size-5 shrink-0 place-items-center rounded disabled:opacity-40" title="删除这一章及其场景分镜">
@@ -481,12 +520,14 @@ export function DirectorPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClos
                         生成进度
                     </div>
                     <div className="flex flex-col gap-2">
-                        {stageRow("① 人物照片", characterImages, collection.characters.length, "#7c5cff", "人物节点生图")}
-                        {stageRow("② 场景照片", sceneImages, collection.scenes.length, "#2d5f8f", "场景节点生图")}
-                        {stageRow("③ 分镜图", shotImages, collection.shots.length, "#57534e", "点分镜生图")}
+                        {stageRow("人物照片", characterImages, collection.characters.length, "#7c5cff", "人物节点生图")}
+                        {stageRow("物品照片", propImages, collection.props.length, "#fcd34d", "物品节点生图")}
+                        {stageRow("场景照片", sceneImages, collection.scenes.length, "#2d8fbf", "场景节点生图")}
+                        {stageRow("分镜图", shotImages, collection.shots.length, "#34d399", "点分镜生图")}
+                        {stageRow("分镜视频", shotVideos, videoShots.length, "#fb923c", "点分镜生视频")}
                     </div>
                     <div className="mt-2 text-[10px]" style={{ color: theme.node.faint }}>
-                        ③ 要用人物照片 + 场景照片作参考 —— 建议先把①②做完再生成分镜
+                        生视频会自动带上已经生成好的分镜图作参考；建议先把分镜图生完再生视频
                     </div>
                 </div>
             ) : null}
@@ -536,8 +577,8 @@ export function DirectorPanel({ ctx, onClose }: { ctx: CanvasNodeContext; onClos
 
             {!extracted && !busy ? (
                 <div className="mt-3 text-[10px] leading-5" style={{ color: theme.node.faint }}>
-                    流程：粘贴小说 →「① 提取人物」→ 在画布上直接改人物设定 →「② 拆解场景与分镜」。<br />
-                    拆完会按「人物顶栏 + 章节分块 + 场景行 + 分镜横排」铺开，并自动建好人物→场景、场景→分镜的连线。
+                    流程：粘贴小说 →「① 拆人物 / 场景 / 物品」→ 在画布上直接改设定 →「② 拆分镜」。<br />
+                    拆完会按「人物区 + 物品区 + 章节分块（场景行 + 分镜横排）」铺开，每个框下方都留了生成图片 / 视频的位置。
                 </div>
             ) : null}
         </div>
