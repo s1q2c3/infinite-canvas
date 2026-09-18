@@ -1,4 +1,4 @@
-import localforage from "localforage";
+import localforage from "@/lib/sqc-storage";
 
 import i18n from "@/i18n";
 import { getMediaBlob, resolveMediaUrl, setMediaBlob } from "@/services/file-storage";

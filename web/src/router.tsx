@@ -1,4 +1,4 @@
-import { createBrowserRouter, Outlet } from "react-router-dom";
+import { createBrowserRouter, createHashRouter, Outlet } from "react-router-dom";
 
 import { AnalyticsTracker } from "@/components/layout/analytics-tracker";
 import UserLayout from "@/layouts/user-layout";
@@ -12,7 +12,13 @@ import NotFound from "@/pages/not-found";
 import PromptsPage from "@/pages/prompts";
 import VideoPage from "@/pages/video";
 
-export const router = createBrowserRouter([
+import { isElectronRuntime } from "@/lib/sqc-fs";
+
+// Electron 用 file:// 加载，BrowserRouter 会在路由跳转/刷新时白屏，改用 HashRouter。
+// 浏览器端行为保持不变。
+const createRouter = isElectronRuntime() ? createHashRouter : createBrowserRouter;
+
+export const router = createRouter([
     {
         element: (
             <UserLayout>

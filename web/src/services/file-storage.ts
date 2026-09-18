@@ -1,4 +1,4 @@
-import localforage from "localforage";
+import localforage from "@/lib/sqc-storage";
 import { nanoid } from "nanoid";
 
 import { withLocalProxy } from "@/stores/use-config-store";

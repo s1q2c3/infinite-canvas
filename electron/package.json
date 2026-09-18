@@ -1,0 +1,39 @@
+{
+    "name": "sqc-infinite-canvas",
+    "version": "1.0.0",
+    "description": "SQC 无限画布桌面版（基于 basketikun/infinite-canvas）",
+    "main": "main.cjs",
+    "author": "SQC",
+    "license": "MIT",
+    "scripts": {
+        "build:web": "cd ../web && bun run build:electron",
+        "copy:renderer": "node scripts/copy-renderer.cjs",
+        "start": "electron .",
+        "dist": "npm run build:web && npm run copy:renderer && electron-builder --dir",
+        "dist:portable": "npm run build:web && npm run copy:renderer && electron-builder --win portable"
+    },
+    "build": {
+        "appId": "com.sqc.infinite-canvas",
+        "productName": "SQC无限画布",
+        "copyright": "Copyright © SQC",
+        "directories": {
+            "output": "release"
+        },
+        "files": [
+            "main.cjs",
+            "preload.cjs",
+            "renderer/**/*"
+        ],
+        "win": {
+            "target": [
+                "dir"
+            ],
+            "artifactName": "SQC无限画布-${version}.${ext}"
+        },
+        "asar": true
+    },
+    "devDependencies": {
+        "electron": "^44.4.2",
+        "electron-builder": "^26.15.3"
+    }
+}

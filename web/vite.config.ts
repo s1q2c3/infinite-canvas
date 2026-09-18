@@ -38,8 +38,9 @@ function localPluginsManifest(): Plugin {
     };
 }
 
-export default defineConfig({
-    base: process.env.VITE_BASE || "/",
+export default defineConfig(({ mode }) => ({
+    // electron 构建用相对路径，这样在 file:// 下能正常加载静态资源
+    base: mode === "electron" ? "./" : process.env.VITE_BASE || "/",
     plugins: [react(), localPluginsManifest()],
     resolve: {
         alias: {
@@ -50,4 +51,4 @@ export default defineConfig({
         __APP_VERSION__: JSON.stringify(localVersion),
         __APP_RELEASES__: JSON.stringify(parseChangelog(localChangelog)),
     },
-});
+}));

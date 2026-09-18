@@ -1,4 +1,4 @@
-import localforage from "localforage";
+import localforage from "@/lib/sqc-storage";
 
 import { runPromptSource, type RawPrompt } from "./prompt-source-runtime";
 import { usePromptSourceStore } from "@/stores/use-prompt-source-store";

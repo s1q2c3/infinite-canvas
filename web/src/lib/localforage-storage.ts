@@ -1,4 +1,4 @@
-import localforage from "localforage";
+import localforage from "@/lib/sqc-storage";
 import type { StateStorage } from "zustand/middleware";
 
 localforage.config({
