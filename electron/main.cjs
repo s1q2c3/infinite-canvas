@@ -1,6 +1,7 @@
 const { app, BrowserWindow, shell, ipcMain } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs/promises");
+const fsSync = require("node:fs");
 
 // Chromium 计算字体/着色器缓存目录时会读 SystemDrive 环境变量；进程环境里没有这个变量时，
 // 它会退化成字面量 "%SystemDrive%"，再当成相对路径在当前工作目录下生成垃圾目录。
@@ -14,9 +15,21 @@ const isDev = !app.isPackaged;
 const dataDir = isDev ? path.join(__dirname, "..", "dev-data") : path.join(path.dirname(process.execPath), "data");
 // 应用可读数据根（JSON / 媒体文件都放这里，渲染层只能操作这个子树）
 const appDataDir = path.join(dataDir, "app");
+// Chromium 的运行时缓存（非业务数据，可删）
+const runtimeDir = path.join(dataDir, ".runtime");
 
-// 必须在 ready 前设置，让 Chromium 自带的运行时缓存也落进便携目录（.runtime 为隐藏缓存，非业务数据）
-app.setPath("userData", path.join(dataDir, ".runtime"));
+// 必须在 ready 前设置，让 Chromium 自带的运行时缓存也落进便携目录
+app.setPath("userData", runtimeDir);
+
+// 再把工作目录也切到运行时缓存目录。
+// 部分 Chromium 子进程（GPU 着色器缓存、字体缓存）会按「当前工作目录」写盘，
+// 不切的话会在便携文件夹里生成 NVIDIA Corporation 之类的垃圾目录。
+try {
+    fsSync.mkdirSync(runtimeDir, { recursive: true });
+    process.chdir(runtimeDir);
+} catch {
+    // 切不过去不影响主流程，只是可能多出缓存目录
+}
 
 // 渲染层传相对路径，解析并做沙箱校验，防止 .. 穿越
 function abs(relPath) {

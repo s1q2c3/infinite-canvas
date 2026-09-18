@@ -94,7 +94,9 @@ import {
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 
+import { isDirectorShot } from "@/lib/director/meta";
 import { registerDirectorNodes } from "@/lib/director/register";
+import { collectShotReferenceNodeIds, DIRECTOR_SHOT_PROMPT } from "@/lib/director/wiring";
 
 // Register built-in nodes in the shared registry once when the module loads.
 registerBuiltinNodes();
@@ -2923,6 +2925,9 @@ function InfiniteCanvasPage() {
             }
             const sourceNode = nodesRef.current.find((item) => item.id === node.id);
             if (!sourceNode) return;
+            // 导演台拆出来的分镜：生成配置节点预先写好提示词，并把所属场景、出场人物、参考图一并接上。
+            // 画布的生成输入只读直接上游一层，不在这里补齐的话，分镜生图拿不到场景和人物信息。
+            const directorShot = isDirectorShot(sourceNode);
             const nodeSize = getNodeSpec(CanvasNodeType.Config);
             const configNode = createCanvasNode(
                 CanvasNodeType.Config,
@@ -2931,15 +2936,20 @@ function InfiniteCanvasPage() {
                     y: sourceNode.position.y + sourceNode.height / 2,
                 },
                 {
-                    prompt: "",
+                    prompt: directorShot ? DIRECTOR_SHOT_PROMPT : "",
                     model: effectiveConfig.imageModel || effectiveConfig.model,
                     size: effectiveConfig.size,
-                    count: getGenerationCount(effectiveConfig.canvasImageCount || effectiveConfig.count),
+                    count: directorShot ? 1 : getGenerationCount(effectiveConfig.canvasImageCount || effectiveConfig.count),
                 },
             );
             const connection = { id: nanoid(), fromNodeId: sourceNode.id, toNodeId: configNode.id };
+            const extraConnections = directorShot
+                ? collectShotReferenceNodeIds(sourceNode.id, nodesRef.current, connectionsRef.current)
+                      .filter((fromNodeId) => fromNodeId !== sourceNode.id && !connectionsRef.current.some((item) => item.fromNodeId === fromNodeId && item.toNodeId === configNode.id))
+                      .map((fromNodeId) => ({ id: nanoid(), fromNodeId, toNodeId: configNode.id }))
+                : [];
             const nextNodes = nodesRef.current.map((item) => (item.id === sourceNode.id ? { ...item, metadata: { ...item.metadata, content: prompt, prompt, status: NODE_STATUS_SUCCESS } } : item)).concat(configNode);
-            const nextConnections = [...connectionsRef.current, connection];
+            const nextConnections = [...connectionsRef.current, connection, ...extraConnections];
             nodesRef.current = nextNodes;
             connectionsRef.current = nextConnections;
             setNodes(nextNodes);

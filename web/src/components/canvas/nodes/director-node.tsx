@@ -1,49 +1,58 @@
-import { AlertCircle, ChevronDown, ChevronRight, Clapperboard, Loader2 } from "lucide-react";
+import { AlertCircle, ChevronDown, ChevronRight, Clapperboard, Loader2, Star } from "lucide-react";
 
-import type { DirectorState } from "@/types/canvas";
+import { readDirectorMeta, readDirectorState } from "@/lib/director/meta";
+import type { DirectorNodeMeta, DirectorSceneMeta } from "@/types/canvas";
 import type { CanvasNodeContext } from "@/types/canvas-plugin";
 
-export function readDirectorState(ctx: CanvasNodeContext): DirectorState | null {
-    return (ctx.node.metadata?.director as DirectorState | undefined) || null;
+/** 节点正文：统一的可滚动文本区。 */
+function NodeText({ text, color }: { text: string; color: string }) {
+    return (
+        <div className="thin-scrollbar h-full w-full overflow-y-auto whitespace-pre-wrap break-words px-3 py-2.5 text-[11px] leading-[1.7]" style={{ color }}>
+            {text}
+        </div>
+    );
 }
 
-/** 导演台节点本体：只显示状态摘要，操作都在下方面板里。 */
+/** 导演台节点本体：只显示阶段摘要，操作都在下方面板里。 */
 export function DirectorNodeContent({ ctx }: { ctx: CanvasNodeContext }) {
     const { theme } = ctx;
-    const state = readDirectorState(ctx);
-    const chapters = state?.chapters || [];
-    const shotCount = chapters.reduce((sum, chapter) => sum + chapter.shots.length, 0);
-    const running = state?.status === "running";
+    const state = readDirectorState(ctx.node);
+    const nodes = ctx.getNodes();
+    const count = (kind: DirectorNodeMeta["kind"]) => nodes.filter((node) => readDirectorMeta(node)?.kind === kind).length;
+    const characters = count("character");
+    const scenes = count("scene");
+    const shots = count("shot");
+    const busy = state?.step === "extracting" || state?.step === "decomposing";
 
     return (
         <div className="flex h-full w-full select-none flex-col items-center justify-center gap-2 px-5 text-center">
-            <Clapperboard className="size-8" style={{ color: running ? theme.node.activeStroke : theme.node.faint }} />
-            {running ? (
+            <Clapperboard className="size-7" style={{ color: busy ? theme.node.activeStroke : theme.node.faint }} />
+            {busy ? (
                 <>
                     <div className="flex items-center gap-2 text-sm font-medium" style={{ color: theme.node.text }}>
                         <Loader2 className="size-4 animate-spin" />
-                        正在拆解…
+                        {state?.step === "extracting" ? "正在提取人物…" : "正在拆解场景与分镜…"}
                     </div>
-                    <div className="text-xs" style={{ color: theme.node.muted }}>
+                    <div className="text-[11px] leading-5" style={{ color: theme.node.muted }}>
                         {state?.progress ? `${state.progress.current}/${state.progress.total} · ${state.progress.label}` : ""}
                     </div>
                 </>
-            ) : state?.status === "error" ? (
+            ) : state?.step === "error" ? (
                 <>
                     <div className="flex items-center gap-2 text-sm font-medium" style={{ color: "#ef4444" }}>
                         <AlertCircle className="size-4" />
                         拆解失败
                     </div>
-                    <div className="line-clamp-3 text-xs leading-5" style={{ color: theme.node.muted }}>
+                    <div className="line-clamp-3 text-[11px] leading-5" style={{ color: theme.node.muted }}>
                         {state.error}
                     </div>
                 </>
-            ) : chapters.length ? (
+            ) : scenes || shots ? (
                 <>
                     <div className="text-sm font-semibold" style={{ color: theme.node.text }}>
-                        {chapters.length} 章 · {shotCount} 个镜头
+                        {characters} 人物 · {scenes} 场景 · {shots} 分镜
                     </div>
-                    <div className="text-xs" style={{ color: theme.node.muted }}>
+                    <div className="text-[11px]" style={{ color: theme.node.muted }}>
                         单击打开导演台
                     </div>
                 </>
@@ -52,10 +61,10 @@ export function DirectorNodeContent({ ctx }: { ctx: CanvasNodeContext }) {
                     <div className="text-sm font-medium" style={{ color: theme.node.text }}>
                         导演台
                     </div>
-                    <div className="text-xs leading-5" style={{ color: theme.node.muted }}>
+                    <div className="text-[11px] leading-5" style={{ color: theme.node.muted }}>
                         单击打开，粘贴小说
                         <br />
-                        自动拆成镜头铺到画布
+                        先提人物，再拆场景与分镜
                     </div>
                 </>
             )}
@@ -63,29 +72,84 @@ export function DirectorNodeContent({ ctx }: { ctx: CanvasNodeContext }) {
     );
 }
 
-/** 章节节点：显示章节名与镜头数，并就地折叠 / 展开该章镜头。 */
+/** 人物节点：显示设定正文，顶部标出主角 / 配角。 */
+export function CharacterNodeContent({ ctx }: { ctx: CanvasNodeContext }) {
+    const { node, theme } = ctx;
+    const meta = readDirectorMeta(node);
+    const tier = meta?.kind === "character" ? meta.tier : "support";
+
+    return (
+        <div className="flex h-full w-full flex-col">
+            <div className="flex shrink-0 items-center gap-1.5 px-3 pt-2 text-[10px] font-medium" style={{ color: tier === "main" ? "#c4b5fd" : theme.node.faint }}>
+                {tier === "main" ? <Star className="size-3 fill-current" /> : null}
+                {tier === "main" ? "主角" : "配角"}
+                <span className="ml-auto truncate opacity-60">{node.title}</span>
+            </div>
+            <div className="min-h-0 flex-1">
+                <NodeText text={node.metadata?.content || ""} color={theme.node.text} />
+            </div>
+        </div>
+    );
+}
+
+/** 场景节点：正文之外，把「出场人物」按人物节点的当前名字动态渲染出来。 */
+export function SceneNodeContent({ ctx }: { ctx: CanvasNodeContext }) {
+    const { node, theme } = ctx;
+    const meta = readDirectorMeta(node);
+    const characterIds = meta?.kind === "scene" ? meta.characterIds : [];
+    // 取人物节点当前标题，所以改人名会自动跟着变
+    const names = characterIds.map((id) => ctx.getNode(id)?.title).filter((name): name is string => Boolean(name));
+
+    return (
+        <div className="flex h-full w-full flex-col">
+            <div className="min-h-0 flex-1">
+                <NodeText text={node.metadata?.content || ""} color={theme.node.text} />
+            </div>
+            <div className="shrink-0 border-t px-3 py-2 text-[10px] leading-4" style={{ borderColor: theme.node.stroke, color: names.length ? "#8ab4d8" : theme.node.faint }}>
+                出场人物：{names.length ? names.join("、") : "（无）"}
+            </div>
+        </div>
+    );
+}
+
+/** 章节节点：标题 + 本章场 / 镜统计 + 一键折叠。 */
 export function ChapterNodeContent({ ctx }: { ctx: CanvasNodeContext }) {
-    const { theme, node } = ctx;
-    const shots = ctx.getNodes().filter((item) => item.metadata?.chapterNodeId === node.id);
-    const collapsed = Boolean(node.metadata?.chapterCollapsed);
-    const title = node.title || node.metadata?.content || "章节";
+    const { node, theme } = ctx;
+    const meta = readDirectorMeta(node);
+    const chapterMeta = meta?.kind === "chapter" ? meta : null;
+    const collapsed = Boolean(chapterMeta?.collapsed);
+
+    const all = ctx.getNodes();
+    const scenes = all.filter((item) => {
+        const sceneMeta = readDirectorMeta(item);
+        return sceneMeta?.kind === "scene" && (sceneMeta as DirectorSceneMeta).chapterNodeId === node.id;
+    });
+    const sceneIds = new Set(scenes.map((item) => item.id));
+    const shots = all.filter((item) => {
+        const shotMeta = readDirectorMeta(item);
+        return shotMeta?.kind === "shot" && sceneIds.has(shotMeta.sceneNodeId);
+    });
 
     const toggle = () => {
+        if (!chapterMeta) return;
         const next = !collapsed;
         ctx.applyOps([
-            { type: "update_node", id: node.id, metadata: { chapterCollapsed: next } },
-            ...shots.map((shot) => ({ type: "update_node" as const, id: shot.id, metadata: { hidden: next } })),
+            { type: "update_node", id: node.id, metadata: { directorMeta: { ...chapterMeta, collapsed: next } } },
+            ...[...scenes, ...shots].map((item) => ({ type: "update_node" as const, id: item.id, metadata: { hidden: next } })),
         ]);
     };
 
     return (
-        <div className="flex h-full w-full select-none flex-col justify-between p-4">
+        <div className="flex h-full w-full select-none flex-col justify-between p-3.5">
             <div className="min-w-0">
-                <div className="text-[11px] font-medium uppercase tracking-wider" style={{ color: theme.node.faint }}>
-                    第 {node.metadata?.chapterOrder ?? "?"} 章
+                <div className="text-[10px] font-medium uppercase tracking-wider" style={{ color: theme.node.faint }}>
+                    第 {chapterMeta?.order ?? "?"} 章
                 </div>
-                <div className="mt-1.5 line-clamp-4 text-[15px] font-semibold leading-6" style={{ color: theme.node.text }}>
-                    {title}
+                <div className="mt-1 line-clamp-3 text-[14px] font-semibold leading-6" style={{ color: theme.node.text }}>
+                    {node.title}
+                </div>
+                <div className="mt-1.5 text-[10px]" style={{ color: theme.node.muted }}>
+                    {scenes.length} 场 · {shots.length} 镜
                 </div>
             </div>
             <button
@@ -95,12 +159,12 @@ export function ChapterNodeContent({ ctx }: { ctx: CanvasNodeContext }) {
                     event.stopPropagation();
                     toggle();
                 }}
-                disabled={!shots.length}
-                className="flex items-center gap-1.5 self-start rounded-lg border px-2.5 py-1.5 text-xs font-medium transition hover:scale-[1.02] disabled:opacity-50"
+                disabled={!scenes.length}
+                className="mt-2 flex items-center gap-1.5 self-start rounded-lg border px-2.5 py-1.5 text-[11px] font-medium transition hover:scale-[1.02] disabled:opacity-50"
                 style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
             >
                 {collapsed ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
-                {collapsed ? `展开 ${shots.length} 个镜头` : `折叠 ${shots.length} 个镜头`}
+                {collapsed ? "展开本章" : "折叠本章"}
             </button>
         </div>
     );
