@@ -94,8 +94,12 @@ import {
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 
+import { registerDirectorNodes } from "@/lib/director/register";
+
 // Register built-in nodes in the shared registry once when the module loads.
 registerBuiltinNodes();
+// 导演台 / 章节节点也注册进同一注册表，走插件渲染路径。
+registerDirectorNodes();
 
 type CanvasClipboard = {
     nodes: CanvasNodeData[];
@@ -692,7 +696,11 @@ function InfiniteCanvasPage() {
     }, [nodes, size.height, size.width, viewport.k, viewport.x, viewport.y]);
 
     const visibleNodes = useMemo(
-        () => nodes.filter((node) => node.position.x + node.width > viewBounds.left && node.position.x < viewBounds.right && node.position.y + node.height > viewBounds.top && node.position.y < viewBounds.bottom),
+        // metadata.hidden 的节点（导演台折叠起来的镜头）不参与渲染。
+        () =>
+            nodes.filter(
+                (node) => !node.metadata?.hidden && node.position.x + node.width > viewBounds.left && node.position.x < viewBounds.right && node.position.y + node.height > viewBounds.top && node.position.y < viewBounds.bottom,
+            ),
         [nodes, viewBounds],
     );
 

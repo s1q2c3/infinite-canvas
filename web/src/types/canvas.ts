@@ -85,6 +85,47 @@ export type CanvasNodeMetadata = {
     videoTaskProvider?: "openai" | "gemini";
     groupId?: string;
     interactive?: boolean; // Plugin node interaction/move state; see CanvasNodeDefinition.interactionToggle.
+    /** 折叠隐藏：渲染时跳过该节点（导演台章节折叠用）。 */
+    hidden?: boolean;
+    /** 导演台节点的持久化状态。 */
+    director?: DirectorState;
+    /** 章节节点：所属导演台节点 id。 */
+    directorNodeId?: string;
+    /** 章节节点：章节序号，从 1 开始。 */
+    chapterOrder?: number;
+    /** 镜头节点：所属章节节点 id。 */
+    chapterNodeId?: string;
+    /** 章节节点：该章镜头是否已折叠隐藏。 */
+    chapterCollapsed?: boolean;
+};
+
+/** 导演台：拆解出的单个镜头。 */
+export type DirectorShot = {
+    id: string;
+    index: number;
+    content: string;
+    nodeId?: string;
+};
+
+/** 导演台：一个章节及其镜头。 */
+export type DirectorChapter = {
+    id: string;
+    title: string;
+    order: number;
+    shots: DirectorShot[];
+    nodeId?: string;
+    collapsed?: boolean;
+};
+
+/** 导演台节点的持久化状态。 */
+export type DirectorState = {
+    novelText: string;
+    /** 导演台独立指定的模型，与全局默认分开。 */
+    model: string;
+    chapters: DirectorChapter[];
+    status: "idle" | "running" | "done" | "error";
+    progress?: { current: number; total: number; label: string };
+    error?: string;
 };
 
 export type CanvasNodeData = {

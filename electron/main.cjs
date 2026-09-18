@@ -2,6 +2,12 @@ const { app, BrowserWindow, shell, ipcMain } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs/promises");
 
+// Chromium 计算字体/着色器缓存目录时会读 SystemDrive 环境变量；进程环境里没有这个变量时，
+// 它会退化成字面量 "%SystemDrive%"，再当成相对路径在当前工作目录下生成垃圾目录。
+// 这里补上默认值，保证便携文件夹始终干净。
+if (!process.env.SystemDrive) process.env.SystemDrive = path.parse(process.execPath).root.replace(/[\\/]+$/, "") || "C:";
+if (!process.env.SystemRoot) process.env.SystemRoot = `${process.env.SystemDrive}\\Windows`;
+
 const isDev = !app.isPackaged;
 
 // 便携数据目录：打包后 = exe 同级 data/；开发时 = 项目 dev-data/

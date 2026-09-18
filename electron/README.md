@@ -71,3 +71,52 @@ cd ../electron && npm run dist
 ## 注意
 
 API Key 以明文保存在 `data/app/infinite-canvas/app_state/` 下，不要外发整个 `data/` 目录。
+升级后用户只需把旧 `data/app/` 拷进新版本文件夹，数据即全部保留。
+
+## 注意
+
+API Key 以明文保存在 `data/app/infinite-canvas/app_state/` 下，不要外发整个 `data/` 目录。
+
+---
+
+# 定制功能：导演台
+
+把小说拆成镜头脚本、自动铺到画布上。属于本项目在 Web 侧的自定义功能（上游没有）。
+
+## 用法
+
+1. 画布工具栏 → 新建「导演台」节点（创建后自动弹出面板）。
+2. 面板里粘贴小说全文，选拆解用的模型（**独立于全局默认模型**），可选「每章镜头数」。
+3. 点「拆解到画布」：按「第X章」切分 → 逐章调用文本模型 → 按「一章一行、行内横排」铺到导演台节点下方。
+4. 每个镜头是一个**可编辑的文本节点**，双击即可改字；需要生图时照常用文本节点 → 生图。
+5. 章节节点上的按钮可就地折叠 / 展开该章镜头；面板里可单章重拆或删除某章。
+
+## 关键设计
+
+| 关注点 | 做法 | 为什么 |
+| --- | --- | --- |
+| 逐章拆解，不整本一次喂 | 每章单独一次模型调用 | 超长上下文会显著掉质量；且可只重拆某一章 |
+| 节点接入方式 | 注册进 `node-registry`，提供 `Content` / `Panel`，走插件渲染路径 | 不改 `canvas-node` 内部渲染分派，合并上游时冲突面最小 |
+| 镜头节点 | 用**内置文本节点** | 双击可改、能直接连生成配置节点，复用现成能力 |
+| 章节折叠 | `metadata.hidden` 标记 + `visibleNodes` 过滤 | 真折叠，画布不被几百个镜头铺满 |
+| 导演台模型 | 存在节点 `metadata.director.model` | 与全局默认分开，拆解可单独用最强模型 |
+
+## 文件
+
+| 路径 | 作用 |
+| --- | --- |
+| `web/src/lib/director/novel-split.ts` | 按章节标题切分，识别不到时按字数兜底 |
+| `web/src/lib/director/prompts.ts` | 拆解提示词与镜头解析（兼容 `---` 分隔和「镜号」开头两种输出） |
+| `web/src/lib/director/decompose.ts` | 逐章调用文本模型，产出章节 / 镜头结构 |
+| `web/src/lib/director/layout.ts` | 章节分行、行内横排的坐标计算与建节点指令 |
+| `web/src/lib/director/register.tsx` | 把导演台 / 章节节点注册进注册表 |
+| `web/src/components/canvas/nodes/director-node.tsx` | 导演台节点与章节节点的外观 |
+| `web/src/components/canvas/nodes/director-panel.tsx` | 导演台面板（粘贴、选模型、进度、章节列表） |
+| `web/src/pages/canvas/project.tsx` | 注册调用 + `visibleNodes` 跳过 `hidden` 节点 |
+| `web/tests/director*.test.*` | 拆解 / 布局 / 渲染 / 注册的单元测试 |
+
+## 改拆解粒度或镜头格式
+
+- 镜头字段（画面 / 台词 / 音效 / 转场）改 `prompts.ts` 里的 `buildChapterPrompt`。
+- 换行距、节点尺寸、每行怎么排改 `layout.ts` 里的 `DIRECTOR_LAYOUT`。
+- 上游改了本地存储结构导致老数据读不出时，在 `sqc-fs.ts` 的 `ensureSqcDataRoot()` 加迁移分支。
